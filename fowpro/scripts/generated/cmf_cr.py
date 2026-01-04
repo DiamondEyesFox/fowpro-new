@@ -1682,13 +1682,42 @@ class Gretel(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
-        self.register_ability(AutomaticAbility(
-            name="Reveal the top card of your magic stone ",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.reveal_top(), EffectBuilder.put_into_field(from_zone="hand")],
-            is_mandatory=True,
-        ))
+        # Enter ability is handled by on_enter_field hook for custom logic
+        pass
+
+    def on_enter_field(self, game, card):
+        """Reveal top stone, put it into play if it's a wind stone."""
+        from ...models import Zone, Attribute
+
+        player = game.players[card.controller]
+
+        if not player.stone_deck:
+            print("[DEBUG] Gretel: No stones in stone deck")
+            return
+
+        # Reveal top stone
+        top_stone = player.stone_deck[0]
+        print(f"[DEBUG] Gretel reveals: {top_stone.data.name}")
+
+        # Check if it's a wind stone (by attribute or by ability text mentioning wind)
+        is_wind = False
+        if top_stone.data.attribute == Attribute.WIND:
+            is_wind = True
+        elif top_stone.data.ability_text and 'wind magic stone' in top_stone.data.ability_text.lower():
+            is_wind = True
+        # Also check for dual stones that produce wind
+        elif top_stone.data.ability_text and 'wind' in top_stone.data.ability_text.lower() and 'produce' in top_stone.data.ability_text.lower():
+            is_wind = True
+
+        if is_wind:
+            # Move to stone area (field)
+            player.stone_deck.pop(0)
+            top_stone.zone = Zone.FIELD
+            top_stone.controller = card.controller
+            player.field.append(top_stone)
+            print(f"[DEBUG] Put {top_stone.data.name} into play!")
+        else:
+            print(f"[DEBUG] Not a wind stone, stays on top")
 
 
 
