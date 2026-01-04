@@ -379,7 +379,8 @@ class GameEngine:
                   from_zone=from_zone.name, to_zone=to_zone.name)
 
         # Emit zone-specific events and call script hooks
-        if to_zone == Zone.FIELD and from_zone != Zone.FIELD:
+        # Register scripts for FIELD and RULER_AREA (rulers have continuous abilities like Grimm)
+        if to_zone in (Zone.FIELD, Zone.RULER_AREA) and from_zone not in (Zone.FIELD, Zone.RULER_AREA):
             print(f"[DEBUG] move_card: setting up card for {card.data.name} (code={card.data.code})", flush=True)
             script = self.get_script(card)
             print(f"[DEBUG] move_card: got script {script.__class__.__name__} for {card.data.code}", flush=True)
@@ -396,16 +397,18 @@ class GameEngine:
                 traceback.print_exc()
                 raise
 
-            # NOW emit the event (triggers are registered and will fire)
-            print(f"[DEBUG] move_card: emitting ENTERS_FIELD for {card.data.name}", flush=True)
-            self.emit(EventType.ENTERS_FIELD, card.controller, card)
+            # Only emit ENTERS_FIELD for actual field entry (not ruler area)
+            if to_zone == Zone.FIELD:
+                # NOW emit the event (triggers are registered and will fire)
+                print(f"[DEBUG] move_card: emitting ENTERS_FIELD for {card.data.name}", flush=True)
+                self.emit(EventType.ENTERS_FIELD, card.controller, card)
 
-            # Call script's on_enter_field hook (legacy, for manual handling)
-            try:
-                script.on_enter_field(self, card)
-            except Exception as e:
-                print(f"[DEBUG] move_card: on_enter_field hook error: {e}", flush=True)
-            print(f"[DEBUG] move_card: on_enter_field done for {card.data.name}", flush=True)
+                # Call script's on_enter_field hook (legacy, for manual handling)
+                try:
+                    script.on_enter_field(self, card)
+                except Exception as e:
+                    print(f"[DEBUG] move_card: on_enter_field hook error: {e}", flush=True)
+                print(f"[DEBUG] move_card: on_enter_field done for {card.data.name}", flush=True)
 
         if from_zone == Zone.FIELD and to_zone != Zone.FIELD:
             self.emit(EventType.LEAVES_FIELD, from_player, card)
@@ -471,6 +474,18 @@ class GameEngine:
         self.game_over = False
         self.winner = -1
         self.is_first_turn = True
+
+        # Initialize ruler scripts (rulers have continuous abilities like Grimm's)
+        for p in self.players:
+            if p.ruler:
+                script = self.get_script(p.ruler)
+                try:
+                    script.initial_effect(self, p.ruler)
+                    self._register_card_triggers(p.ruler, script)
+                    self._register_card_continuous_effects(p.ruler, script)
+                    print(f"[DEBUG] start_game: Initialized ruler script for {p.ruler.data.name}")
+                except Exception as e:
+                    print(f"[DEBUG] start_game: Ruler script init error: {e}")
 
         self.emit(EventType.GAME_START, first_player)
 
@@ -637,7 +652,7 @@ class GameEngine:
         # Register cost modifiers (CR 402.2)
         if hasattr(script, 'get_cost_modifiers'):
             try:
-                from .rules.costs import CostReduction, CostIncrease
+                from .rules.costs import CostReduction, CostIncrease, CostPaymentModifier
                 modifiers = script.get_cost_modifiers(self, card)
                 for mod in modifiers:
                     if isinstance(mod, CostReduction):
@@ -646,6 +661,9 @@ class GameEngine:
                     elif isinstance(mod, CostIncrease):
                         mod.source_id = card.uid
                         self._rules_engine.costs.register_increase(mod)
+                    elif isinstance(mod, CostPaymentModifier):
+                        mod.source_id = card.uid
+                        self._rules_engine.costs.register_payment_modifier(mod)
             except Exception as e:
                 print(f"[DEBUG] Error registering cost modifiers: {e}")
 
@@ -1234,8 +1252,10 @@ class GameEngine:
                     return False  # No incarnation cost available
             else:
                 # Normal cost payment
-                # Check for Grimm's ability: Fairy Tale resonators can be paid with any will
-                any_will = self._grimm_fairy_tale_check(player, card)
+                # Check for cost payment modifiers (e.g., Grimm's ability via CostManager)
+                any_will = False
+                if self._rules_engine:
+                    any_will = self._rules_engine.costs.any_will_pays_colored(card, player)
 
                 # Check base cost
                 if not p.will_pool.can_pay(card.data.cost, any_will_pays_colored=any_will):
@@ -1573,35 +1593,6 @@ class GameEngine:
                     if self.is_valid_target(source, card, source_controller):
                         valid.append(card)
             return valid
-
-    def _grimm_fairy_tale_check(self, player: int, card: Card) -> bool:
-        """Check if Grimm's ability allows paying with any will color.
-
-        Grimm, the Fairy Tale Prince (CMF-005):
-        'You may pay the attribute cost of Fairy Tale resonators with will of any attribute.'
-        """
-        p = self.players[player]
-
-        # Check if ruler is Grimm
-        ruler = p.ruler or p.j_ruler
-        if not ruler:
-            return False
-
-        # Grimm is CMF-005
-        if ruler.data.code != "CMF-005":
-            return False
-
-        # Check if card is a Fairy Tale resonator
-        if not card.data.is_resonator():
-            return False
-
-        if not card.data.races:
-            return False
-
-        if 'Fairy Tale' not in card.data.races:
-            return False
-
-        return True
 
     def _play_resonator(self, player: int, card: Card):
         """Play a resonator to the field"""
@@ -2108,7 +2099,10 @@ class GameEngine:
 
             # Play cards from hand
             for card in p.hand:
-                any_will = self._grimm_fairy_tale_check(player, card)
+                # Check for cost payment modifiers (e.g., Grimm's ability via CostManager)
+                any_will = False
+                if self._rules_engine:
+                    any_will = self._rules_engine.costs.any_will_pays_colored(card, player)
                 if p.will_pool.can_pay(card.data.cost, any_will_pays_colored=any_will):
                     actions.append({
                         "type": "play_card",

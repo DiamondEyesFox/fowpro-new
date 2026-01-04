@@ -17,6 +17,7 @@ from ..rules_bridge import (
     ModalAbility, IncarnationCost, AwakeningCost,
 )
 from ...models import Attribute, WillCost
+from ...rules.costs import CostPaymentModifier
 
 
 @ScriptRegistry.register("CMF-001")
@@ -111,14 +112,107 @@ class GrimmTheFairyTalePrince(RulesCardScript):
     Activate Pay{1} , discard a Fairy Tale resonator: Search your main deck for a Fairy Tale resonator, reveal it and put it into your hand. Then shuffle your main deck. This ability can be played only once per turn.
     """
 
+    def __init__(self, card_code: str):
+        super().__init__(card_code)
+        self._used_search_this_turn = {}  # card_uid -> turn_number
+
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Activate] ability
-        self.register_ability(ActivateAbility(
-            name="Pay{1} , discard a Fairy Tale resonator:",
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
-            once_per_turn=True,
-        ))
+        # Activate ability is handled by activate_ability method
+        pass
+
+    def get_cost_modifiers(self, game, card):
+        """
+        Register Grimm's continuous ability as a payment modifier.
+
+        CR 402: "You may pay the attribute cost of Fairy Tale resonators
+        with will of any attribute."
+        """
+        def is_fairy_tale_resonator(target_card, player):
+            """Check if target is a Fairy Tale resonator controlled by Grimm's controller."""
+            if player != card.controller:
+                return False
+            if not target_card.data.is_resonator():
+                return False
+            if not target_card.data.races:
+                return False
+            return 'Fairy Tale' in target_card.data.races
+
+        return [
+            CostPaymentModifier(
+                name="Grimm - Any Will for Fairy Tales",
+                any_will_pays_colored=True,
+                applies_to_filter=is_fairy_tale_resonator,
+            )
+        ]
+
+    def can_activate(self, game, card):
+        """Check if activate ability can be used (once per turn)."""
+        if card.uid in self._used_search_this_turn:
+            if self._used_search_this_turn[card.uid] == game.turn_number:
+                return False
+
+        # Need 1 void will
+        player = game.players[card.controller]
+        if player.will_pool.void < 1 and player.will_pool.total() < 1:
+            return False
+
+        # Need a Fairy Tale in hand to discard
+        fairy_tales = [c for c in player.hand
+                       if c.data.races and 'Fairy Tale' in c.data.races]
+        if not fairy_tales:
+            return False
+
+        return True
+
+    def activate_ability(self, game, card, discard_card=None):
+        """
+        Activate Pay{1}, discard a Fairy Tale resonator:
+        Search your main deck for a Fairy Tale resonator, reveal it and put it into your hand.
+        Then shuffle your main deck.
+        """
+        import random
+        from ...models import Zone
+
+        player = game.players[card.controller]
+
+        # Pay cost: 1 will
+        if not player.will_pool.pay(WillCost(void=1)):
+            return False
+
+        # Discard a Fairy Tale (auto-select first if not specified)
+        if discard_card is None:
+            fairy_tales = [c for c in player.hand
+                           if c.data.races and 'Fairy Tale' in c.data.races]
+            if not fairy_tales:
+                return False
+            discard_card = fairy_tales[0]
+
+        if discard_card in player.hand:
+            player.hand.remove(discard_card)
+            discard_card.zone = Zone.GRAVEYARD
+            player.graveyard.append(discard_card)
+            print(f"[DEBUG] Grimm: Discarded {discard_card.data.name}")
+
+        # Search for Fairy Tale resonator
+        targets = [c for c in player.main_deck
+                   if c.data.is_resonator() and c.data.races and 'Fairy Tale' in c.data.races]
+
+        if targets:
+            # Auto-select first (TODO: add UI for selection)
+            target = targets[0]
+            player.main_deck.remove(target)
+            target.zone = Zone.HAND
+            player.hand.append(target)
+            print(f"[DEBUG] Grimm: Added {target.data.name} to hand")
+
+        # Shuffle deck
+        random.shuffle(player.main_deck)
+
+        # Mark ability as used
+        self._used_search_this_turn[card.uid] = game.turn_number
+
+        return True
 
 
 

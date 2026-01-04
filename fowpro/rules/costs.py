@@ -327,6 +327,33 @@ class CostIncrease:
 
 
 @dataclass
+class CostPaymentModifier:
+    """
+    A modifier that changes HOW costs can be paid (not the cost amount).
+
+    CR 402: Some effects allow paying costs in alternative ways.
+
+    Examples:
+    - Grimm: "You may pay the attribute cost of Fairy Tale resonators
+              with will of any attribute."
+    - Effects that let you pay life instead of will
+    """
+    effect_id: str = ""
+    source_id: str = ""
+    name: str = ""
+
+    # If True, any will color can pay for colored costs
+    any_will_pays_colored: bool = False
+
+    # Condition for this modifier to apply
+    condition: Optional[Callable] = None
+
+    # What cards this applies to (filter function)
+    # Signature: (card: Card, player: int) -> bool
+    applies_to_filter: Optional[Callable] = None
+
+
+@dataclass
 class CostPaymentPlan:
     """
     A complete plan for how to pay a cost.
@@ -381,6 +408,7 @@ class CostManager:
         # Registered cost modifiers
         self.reductions: Dict[str, CostReduction] = {}
         self.increases: Dict[str, CostIncrease] = {}
+        self.payment_modifiers: Dict[str, CostPaymentModifier] = {}
 
         # Effect counter for unique IDs
         self._effect_counter = 0
@@ -401,12 +429,22 @@ class CostManager:
         self.increases[effect_id] = increase
         return effect_id
 
+    def register_payment_modifier(self, modifier: CostPaymentModifier) -> str:
+        """Register a cost payment modifier effect."""
+        self._effect_counter += 1
+        effect_id = f"pay_{self._effect_counter:06d}"
+        modifier.effect_id = effect_id
+        self.payment_modifiers[effect_id] = modifier
+        return effect_id
+
     def unregister_effect(self, effect_id: str):
         """Remove a cost modifier."""
         if effect_id in self.reductions:
             del self.reductions[effect_id]
         if effect_id in self.increases:
             del self.increases[effect_id]
+        if effect_id in self.payment_modifiers:
+            del self.payment_modifiers[effect_id]
 
     def unregister_from_source(self, source_id: str):
         """Remove all cost modifiers from a source."""
@@ -423,6 +461,54 @@ class CostManager:
         ]
         for eid in to_remove:
             del self.increases[eid]
+
+        to_remove = [
+            eid for eid, e in self.payment_modifiers.items()
+            if e.source_id == source_id
+        ]
+        for eid in to_remove:
+            del self.payment_modifiers[eid]
+
+    def get_payment_modifiers_for_card(self, card: 'Card', player: int) -> List[CostPaymentModifier]:
+        """Get all payment modifiers that apply to a specific card."""
+        result = []
+        for modifier in self.payment_modifiers.values():
+            if self._payment_modifier_applies(modifier, card, player):
+                result.append(modifier)
+        return result
+
+    def _payment_modifier_applies(self, modifier: CostPaymentModifier, card: 'Card', player: int) -> bool:
+        """Check if a payment modifier applies to a card."""
+        # Check source still exists
+        source = self.game.get_card(modifier.source_id)
+        if not source:
+            return False
+
+        # Check condition
+        if modifier.condition:
+            try:
+                if not modifier.condition(self.game, source, card):
+                    return False
+            except Exception:
+                return False
+
+        # Check filter
+        if modifier.applies_to_filter:
+            try:
+                if not modifier.applies_to_filter(card, player):
+                    return False
+            except Exception:
+                return False
+
+        return True
+
+    def any_will_pays_colored(self, card: 'Card', player: int) -> bool:
+        """Check if any will can pay for colored costs on this card."""
+        modifiers = self.get_payment_modifiers_for_card(card, player)
+        for mod in modifiers:
+            if mod.any_will_pays_colored:
+                return True
+        return False
 
     def get_base_cost(self, card: 'Card') -> WillCost:
         """
@@ -664,9 +750,10 @@ class CostManager:
                 will_cost.darkness += awk_will.darkness
                 additional.extend(awk_add)
 
-        # Check will
+        # Check will (with any payment modifiers like Grimm's ability)
         will_pool = self.game.get_will_pool(player)
-        if not will_cost.can_pay(will_pool):
+        any_will = self.any_will_pays_colored(card, player)
+        if not will_cost.can_pay(will_pool, any_will_pays_colored=any_will):
             return False
 
         # Check additional costs
@@ -833,41 +920,62 @@ class CostManager:
         # Plan will payment
         will_pool = self.game.get_will_pool(player)
 
-        # Pay colored first
-        for color in ['light', 'fire', 'water', 'wind', 'darkness', 'moon']:
-            needed = getattr(will_cost, color, 0)
-            if needed > 0:
+        # Check for payment modifiers (e.g., Grimm's ability)
+        any_will = self.any_will_pays_colored(card, player)
+
+        if any_will:
+            # Any will can pay any cost - just pay total from any sources
+            total_needed = (will_cost.void + will_cost.light + will_cost.fire +
+                            will_cost.water + will_cost.wind + will_cost.darkness)
+            remaining = total_needed
+
+            for color in ['void', 'light', 'fire', 'water', 'wind', 'darkness', 'moon']:
+                if remaining <= 0:
+                    break
                 available = will_pool.get(color, 0)
-                if available < needed:
-                    return None  # Can't pay
-                plan.will_to_spend[color] = needed
+                if available > 0:
+                    use = min(available, remaining)
+                    plan.will_to_spend[color] = use
+                    remaining -= use
 
-        # Pay void with remaining will
-        remaining_pool = dict(will_pool)
-        for color, spent in plan.will_to_spend.items():
-            remaining_pool[color] = remaining_pool.get(color, 0) - spent
+            if remaining > 0:
+                return None  # Can't pay
+        else:
+            # Normal payment - pay colored first, then void with remainder
+            for color in ['light', 'fire', 'water', 'wind', 'darkness', 'moon']:
+                needed = getattr(will_cost, color, 0)
+                if needed > 0:
+                    available = will_pool.get(color, 0)
+                    if available < needed:
+                        return None  # Can't pay
+                    plan.will_to_spend[color] = needed
 
-        void_needed = will_cost.void
+            # Pay void with remaining will
+            remaining_pool = dict(will_pool)
+            for color, spent in plan.will_to_spend.items():
+                remaining_pool[color] = remaining_pool.get(color, 0) - spent
 
-        # First use void/colorless will from pool for void costs
-        void_available = remaining_pool.get('void', 0)
-        if void_available > 0 and void_needed > 0:
-            use = min(void_available, void_needed)
-            plan.will_to_spend['void'] = plan.will_to_spend.get('void', 0) + use
-            void_needed -= use
+            void_needed = will_cost.void
 
-        # Then use remaining colored will for void costs
-        for color in ['light', 'fire', 'water', 'wind', 'darkness', 'moon']:
-            if void_needed <= 0:
-                break
-            available = remaining_pool.get(color, 0)
-            if available > 0:
-                use = min(available, void_needed)
-                plan.will_to_spend[color] = plan.will_to_spend.get(color, 0) + use
+            # First use void/colorless will from pool for void costs
+            void_available = remaining_pool.get('void', 0)
+            if void_available > 0 and void_needed > 0:
+                use = min(void_available, void_needed)
+                plan.will_to_spend['void'] = plan.will_to_spend.get('void', 0) + use
                 void_needed -= use
 
-        if void_needed > 0:
-            return None  # Can't pay void
+            # Then use remaining colored will for void costs
+            for color in ['light', 'fire', 'water', 'wind', 'darkness', 'moon']:
+                if void_needed <= 0:
+                    break
+                available = remaining_pool.get(color, 0)
+                if available > 0:
+                    use = min(available, void_needed)
+                    plan.will_to_spend[color] = plan.will_to_spend.get(color, 0) + use
+                    void_needed -= use
+
+            if void_needed > 0:
+                return None  # Can't pay void
 
         # Plan additional costs
         p = self.game.players[player]
