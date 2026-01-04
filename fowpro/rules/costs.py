@@ -191,6 +191,9 @@ class WillCost:
             available['moon'] - self.moon
         )
 
+        # Add void/colorless will from pool
+        remaining += will_pool.get('void', 0)
+
         # Check void requirement
         return remaining >= self.void
 
@@ -441,7 +444,7 @@ class CostManager:
                     cost.water = cost_dict.get('water', 0)
                     cost.wind = cost_dict.get('wind', 0)
                     cost.darkness = cost_dict.get('darkness', 0)
-                    cost.void = cost_dict.get('generic', 0)
+                    cost.void = cost_dict.get('void', 0)
                 return cost
         return WillCost()
 
@@ -493,8 +496,8 @@ class CostManager:
         additional = []
 
         # Parse from card text/data
-        if card.data and card.data.text:
-            text = card.data.text.lower()
+        if card.data and card.data.ability_text:
+            text = card.data.ability_text.lower()
 
             # Rest this card pattern
             if "[rest]" in text or "rest:" in text:
@@ -571,10 +574,10 @@ class CostManager:
 
     def _build_incarnation_cost(self, card: 'Card') -> Optional[AlternativeCost]:
         """Build the Incarnation alternative cost from card text."""
-        if not card.data or not card.data.text:
+        if not card.data or not card.data.ability_text:
             return None
 
-        text = card.data.text.lower()
+        text = card.data.ability_text.lower()
 
         # Look for Incarnation specification
         if "incarnation:" not in text:
@@ -621,10 +624,10 @@ class CostManager:
 
         CR 1110: Awakening is an additional cost for a bonus effect.
         """
-        if not card.data or not card.data.text:
+        if not card.data or not card.data.ability_text:
             return None
 
-        text = card.data.text.lower()
+        text = card.data.ability_text.lower()
 
         if "awakening" not in text:
             return None
@@ -845,6 +848,15 @@ class CostManager:
             remaining_pool[color] = remaining_pool.get(color, 0) - spent
 
         void_needed = will_cost.void
+
+        # First use void/colorless will from pool for void costs
+        void_available = remaining_pool.get('void', 0)
+        if void_available > 0 and void_needed > 0:
+            use = min(void_available, void_needed)
+            plan.will_to_spend['void'] = plan.will_to_spend.get('void', 0) + use
+            void_needed -= use
+
+        # Then use remaining colored will for void costs
         for color in ['light', 'fire', 'water', 'wind', 'darkness', 'moon']:
             if void_needed <= 0:
                 break
