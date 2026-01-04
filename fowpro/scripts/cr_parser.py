@@ -135,6 +135,20 @@ class CRAbilityParser:
     Recognizes Grimm Cluster-era patterns and keywords.
     """
 
+    # Word to number mapping for parsing
+    WORD_NUMBERS = {
+        'a': 1, 'an': 1, 'one': 1, 'two': 2, 'three': 3, 'four': 4,
+        'five': 5, 'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10
+    }
+
+    @classmethod
+    def _word_to_number(cls, word: str) -> int:
+        """Convert a word or digit string to an integer."""
+        word = word.lower().strip()
+        if word.isdigit():
+            return int(word)
+        return cls.WORD_NUMBERS.get(word, 1)
+
     # Grimm-era keywords (CR 1100+)
     GRIMM_KEYWORDS = {
         'flying': KeywordAbility.FLYING,
@@ -212,6 +226,8 @@ class CRAbilityParser:
         r'whenever\s+you\s+gain\s+life': TriggerCondition.GAINS_LIFE,
         r'whenever\s+you\s+lose\s+life': TriggerCondition.LOSES_LIFE,
         r'whenever.*?becomes?\s+rested': TriggerCondition.RESTED,  # "becomes rested"
+        r'when.*?put\s+into\s+a?\s*graveyard': TriggerCondition.PUT_INTO_GRAVEYARD,  # "put into a graveyard"
+        r'when.*?goes?\s+to\s+(?:the\s+)?graveyard': TriggerCondition.PUT_INTO_GRAVEYARD,  # "goes to graveyard"
     }
 
     # Will symbol mapping
@@ -228,18 +244,52 @@ class CRAbilityParser:
         abilities = []
         text = ability_text.strip()
 
+        # Strip keyword reminder text in parentheses
+        # e.g., "Swiftness (This card can attack...)" -> "Swiftness"
+        reminder_patterns = [
+            r'this\s+card\s+can\s+attack',
+            r'cannot\s+be\s+blocked\s+by',
+            r'while\s+attacking',
+            r'if\s+this\s+card\s+deals\s+more',
+            r'activate\s+its\s*\{?rest',
+            r'deals?\s+damage.*?lethal',
+        ]
+        reminder_regex = '|'.join(reminder_patterns)
+        text = re.sub(rf'\s*\([^)]*(?:{reminder_regex})[^)]*\)', '', text, flags=re.IGNORECASE)
+
         # Check for modal ability first (takes precedence)
         modal_ability = self._parse_modal_ability(text)
         if modal_ability:
             abilities.append(modal_ability)
 
-        # Check for keywords
+        # Check for keywords - create effects for each keyword found
         keywords = self._extract_keywords(text)
         if keywords != KeywordAbility.NONE:
+            keyword_effects = []
+            # Create individual GRANT_KEYWORD effects for each keyword
+            for keyword_name, keyword_flag in self.GRIMM_KEYWORDS.items():
+                if keywords & keyword_flag:
+                    keyword_effects.append(ParsedEffect(
+                        action=EffectAction.GRANT_KEYWORD,
+                        params={'keyword': keyword_flag, 'inherent': True},
+                        duration=EffectDuration.PERMANENT,
+                        raw_text=keyword_name,
+                    ))
+            # Also check protection patterns
+            for pattern, keyword_flag in self.PROTECTION_PATTERNS.items():
+                if keywords & keyword_flag:
+                    keyword_effects.append(ParsedEffect(
+                        action=EffectAction.GRANT_KEYWORD,
+                        params={'keyword': keyword_flag, 'inherent': True},
+                        duration=EffectDuration.PERMANENT,
+                        raw_text=pattern,
+                    ))
+
             abilities.append(ParsedAbility(
                 ability_type=AbilityType.CONTINUOUS,  # Keywords are continuous
                 name="Keywords",
                 keywords=keywords,
+                effects=keyword_effects,  # Now has effects!
                 raw_text=text,
             ))
 
@@ -252,8 +302,8 @@ class CRAbilityParser:
         # Split by newlines and markers
         segments = self._split_into_segments(text)
 
-        for segment_type, segment_text in segments:
-            ability = self._parse_segment(segment_type, segment_text)
+        for segment_type, segment_text, implied_trigger in segments:
+            ability = self._parse_segment(segment_type, segment_text, implied_trigger)
             if ability:
                 # Attach incarnation/awakening to the first non-keyword ability
                 if incarnation and not ability.keywords:
@@ -297,8 +347,18 @@ class CRAbilityParser:
 
         return keywords
 
-    def _split_into_segments(self, text: str) -> List[Tuple[AbilityType, str]]:
-        """Split text into ability segments."""
+    # Marker to trigger condition mapping
+    MARKER_TRIGGERS = {
+        '[enter]': TriggerCondition.ENTER_FIELD,
+        'enter': TriggerCondition.ENTER_FIELD,
+        '[leave]': TriggerCondition.LEAVE_FIELD,
+        'leave': TriggerCondition.LEAVE_FIELD,
+        '[break]': TriggerCondition.DESTROYED,
+        'break': TriggerCondition.DESTROYED,
+    }
+
+    def _split_into_segments(self, text: str) -> List[Tuple[AbilityType, str, Optional[TriggerCondition]]]:
+        """Split text into ability segments. Returns (ability_type, text, implied_trigger)."""
         segments = []
         lines = text.split('\n')
 
@@ -317,7 +377,8 @@ class CRAbilityParser:
                     # Handle colon after marker
                     if content.startswith(':'):
                         content = content[1:].strip()
-                    segments.append((ability_type, content))
+                    implied_trigger = self.MARKER_TRIGGERS.get(marker)
+                    segments.append((ability_type, content, implied_trigger))
                     marker_found = True
                     break
 
@@ -327,30 +388,32 @@ class CRAbilityParser:
                     content = line[pos + len(marker):].strip()
                     if content.startswith(':'):
                         content = content[1:].strip()
-                    segments.append((ability_type, content))
+                    implied_trigger = self.MARKER_TRIGGERS.get(marker)
+                    segments.append((ability_type, content, implied_trigger))
                     marker_found = True
                     break
 
             if not marker_found:
                 # Check for >>> trigger pattern
                 if '>>>' in line or '»' in line:
-                    segments.append((AbilityType.AUTOMATIC, line))
+                    segments.append((AbilityType.AUTOMATIC, line, None))
                 # Check for will production (indicates Will ability)
                 elif re.search(r'produce\s*\{[wrugbvm]\}', line_lower):
-                    segments.append((AbilityType.WILL, line))
+                    segments.append((AbilityType.WILL, line, None))
                 # Check for cost pattern (e.g., "{1}{X},{Rest}:" indicates activated)
                 elif re.search(r'^\s*(?:\{[^}]+\}\s*,?\s*)+\s*:\s*', line):
-                    segments.append((AbilityType.ACTIVATE, line))
+                    segments.append((AbilityType.ACTIVATE, line, None))
                 # Check for text-based cost pattern "Rest/Tap/Sacrifice X: Effect"
                 elif re.search(r'^(?:rest|tap|sacrifice|banish|pay|discard)\s+.+?:\s*', line_lower):
-                    segments.append((AbilityType.ACTIVATE, line))
+                    segments.append((AbilityType.ACTIVATE, line, None))
                 else:
                     # Likely static or continuous
-                    segments.append((AbilityType.CONTINUOUS, line))
+                    segments.append((AbilityType.CONTINUOUS, line, None))
 
         return segments
 
-    def _parse_segment(self, ability_type: AbilityType, text: str) -> Optional[ParsedAbility]:
+    def _parse_segment(self, ability_type: AbilityType, text: str,
+                        implied_trigger: Optional[TriggerCondition] = None) -> Optional[ParsedAbility]:
         """Parse a single ability segment."""
         text_lower = text.lower()
 
@@ -371,6 +434,9 @@ class CRAbilityParser:
         # Parse trigger condition for automatic abilities
         if ability_type == AbilityType.AUTOMATIC:
             ability.trigger_condition = self._parse_trigger_condition(text_lower)
+            # Use implied trigger from marker if no trigger found in text
+            if ability.trigger_condition is None and implied_trigger is not None:
+                ability.trigger_condition = implied_trigger
 
         # Handle >>> separator
         effect_text = text
@@ -528,28 +594,17 @@ class CRAbilityParser:
                 raw_text=will_match.group(0),
             ))
 
-        # Draw cards
-        draw_match = re.search(r'draw\s+(\d+|a|an)\s+cards?', text)
+        # Draw cards - handles "draw a card", "draw 2 cards", "draw two cards"
+        draw_match = re.search(r'draw\s+(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten)\s+cards?', text)
         if draw_match:
-            count = draw_match.group(1)
+            count = self._word_to_number(draw_match.group(1))
             effects.append(ParsedEffect(
                 action=EffectAction.DRAW,
-                params={'count': 1 if count in ('a', 'an') else int(count)},
+                params={'count': count},
                 raw_text=draw_match.group(0),
             ))
 
-        # Deal damage - "deals X damage to target"
-        damage_match = re.search(r'deals?\s+(\d+)\s+damage\s+to\s+(target\s+)?(.+?)(?:\.|$)', text)
-        if damage_match:
-            target = self._parse_target_phrase(damage_match.group(3))
-            effects.append(ParsedEffect(
-                action=EffectAction.DEAL_DAMAGE,
-                params={'amount': int(damage_match.group(1))},
-                target=target,
-                raw_text=damage_match.group(0),
-            ))
-
-        # "This card deals X damage" pattern
+        # Deal damage - check more specific "This card deals" pattern first
         this_damage_match = re.search(r'this\s+card\s+deals?\s+(\d+)\s+damage\s+to\s+(target\s+)?(.+?)(?:\.|$)', text)
         if this_damage_match:
             target = self._parse_target_phrase(this_damage_match.group(3))
@@ -559,6 +614,17 @@ class CRAbilityParser:
                 target=target,
                 raw_text=this_damage_match.group(0),
             ))
+        else:
+            # Generic "deals X damage to target" pattern
+            damage_match = re.search(r'deals?\s+(\d+)\s+damage\s+to\s+(target\s+)?(.+?)(?:\.|$)', text)
+            if damage_match:
+                target = self._parse_target_phrase(damage_match.group(3))
+                effects.append(ParsedEffect(
+                    action=EffectAction.DEAL_DAMAGE,
+                    params={'amount': int(damage_match.group(1))},
+                    target=target,
+                    raw_text=damage_match.group(0),
+                ))
 
         # Destroy
         destroy_match = re.search(r'destroy\s+(target\s+)?(.+?)(?:\.|$)', text)
@@ -632,23 +698,69 @@ class CRAbilityParser:
         if buff_match:
             atk = int(buff_match.group(1))
             def_ = int(buff_match.group(2))
+            # Check if this is a group buff ("Each X you control gains")
+            group_buff = bool(re.search(r'each\s+\w+.*you\s+control\s+gains?', text, re.IGNORECASE))
+            # Check target type for group buffs
+            target_type = None
+            if group_buff:
+                type_match = re.search(r'each\s+(\w+)', text, re.IGNORECASE)
+                if type_match:
+                    target_type = type_match.group(1)
             effects.append(ParsedEffect(
                 action=EffectAction.MODIFY_ATK if atk != 0 else EffectAction.MODIFY_DEF,
-                params={'atk': atk, 'def': def_},
+                params={'atk': atk, 'def': def_, 'to_others': group_buff, 'target_type': target_type},
                 duration=self._parse_duration(text),
                 raw_text=buff_match.group(0),
             ))
 
-        # Rest/Recover target
-        if re.search(r'rest\s+target', text):
+        # Rest/Recover target (enhanced pattern)
+        rest_match = re.search(r'rest\s+(?:up\s+to\s+)?(?:(\d+|one|two|three)\s+)?(?:target\s+)?(.+?)(?:\.|$)', text)
+        if rest_match and 'rest' in text.lower():
+            count = self._word_to_number(rest_match.group(1)) if rest_match.group(1) else 1
+            target = self._parse_target_phrase(rest_match.group(2)) if rest_match.group(2) else None
             effects.append(ParsedEffect(
                 action=EffectAction.REST,
-                raw_text="rest target",
+                params={'count': count, 'up_to': 'up to' in text.lower()},
+                target=target,
+                raw_text=rest_match.group(0),
             ))
-        if re.search(r'recover\s+target', text):
+        recover_match = re.search(r'recover\s+(?:up\s+to\s+)?(?:(\d+|one|two|three)\s+)?(?:target\s+)?(.+?)(?:\.|$)', text)
+        if recover_match and 'recover' in text.lower() and 'rested' not in text.lower():
+            count = self._word_to_number(recover_match.group(1)) if recover_match.group(1) else 1
+            target = self._parse_target_phrase(recover_match.group(2)) if recover_match.group(2) else None
             effects.append(ParsedEffect(
                 action=EffectAction.RECOVER,
-                raw_text="recover target",
+                params={'count': count, 'up_to': 'up to' in text.lower()},
+                target=target,
+                raw_text=recover_match.group(0),
+            ))
+
+        # Protection: "cannot be targeted by spells or abilities"
+        protect_match = re.search(r'cannot\s+be\s+targeted\s+by\s+(spells?|abilities|spells?\s+or\s+abilities)(?:\s+(?:your\s+)?opponent\s+controls)?', text)
+        if protect_match:
+            effects.append(ParsedEffect(
+                action=EffectAction.GRANT_KEYWORD,
+                params={'keyword': KeywordAbility.BARRIER, 'protection': True, 'from': protect_match.group(1)},
+                duration=self._parse_duration(text),
+                raw_text=protect_match.group(0),
+            ))
+
+        # Indestructible: "cannot be destroyed"
+        if re.search(r'cannot\s+be\s+destroyed', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.GRANT_KEYWORD,
+                params={'keyword': KeywordAbility.INDESTRUCTIBLE},
+                duration=self._parse_duration(text),
+                raw_text="cannot be destroyed",
+            ))
+
+        # Swap ATK and DEF
+        if re.search(r'swap\s+(?:the\s+)?atk\s+and\s+def', text, re.IGNORECASE):
+            effects.append(ParsedEffect(
+                action=EffectAction.MODIFY_ATK,
+                params={'swap_stats': True},
+                duration=self._parse_duration(text),
+                raw_text="swap ATK and DEF",
             ))
 
         # Cancel spell
@@ -684,17 +796,39 @@ class CRAbilityParser:
                 raw_text="search deck",
             ))
 
-        # Grant keyword
-        keyword_match = re.search(r'gains?\s+\[?(\w+(?:\s+\w+)?)\]?(?:\s+until|\.)', text)
+        # Shuffle into deck
+        if re.search(r'shuffle\s+(?:this\s+card\s+|it\s+)?into\s+(?:its\s+|your\s+)?(?:owner\'?s?\s+)?(?:main\s+)?deck', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.SHUFFLE_INTO_DECK,
+                raw_text="shuffle into deck",
+            ))
+
+        # Grant keyword(s) - handles single or multiple: "gains Swiftness" or "gains First Strike and Swiftness"
+        keyword_match = re.search(r'gains?\s+(.+?)(?:\s+until|\.)', text, re.IGNORECASE)
         if keyword_match:
-            keyword = keyword_match.group(1).lower()
-            if keyword in self.GRIMM_KEYWORDS:
-                effects.append(ParsedEffect(
-                    action=EffectAction.GRANT_KEYWORD,
-                    params={'keyword': self.GRIMM_KEYWORDS[keyword]},
-                    duration=self._parse_duration(text),
-                    raw_text=keyword_match.group(0),
-                ))
+            keyword_text = keyword_match.group(1).lower()
+            # Split by "and" to handle multiple keywords
+            keyword_parts = re.split(r'\s+and\s+', keyword_text)
+            granted_keywords = []
+            for part in keyword_parts:
+                part = part.strip().strip('[]')
+                # Handle multi-word keywords like "first strike"
+                if part in self.GRIMM_KEYWORDS:
+                    granted_keywords.append(self.GRIMM_KEYWORDS[part])
+                else:
+                    # Try matching individual words
+                    for word in part.split():
+                        if word in self.GRIMM_KEYWORDS:
+                            granted_keywords.append(self.GRIMM_KEYWORDS[word])
+
+            if granted_keywords:
+                for kw in granted_keywords:
+                    effects.append(ParsedEffect(
+                        action=EffectAction.GRANT_KEYWORD,
+                        params={'keyword': kw},
+                        duration=self._parse_duration(text),
+                        raw_text=keyword_match.group(0),
+                    ))
 
         # Banish (zone -> removed from game)
         if re.search(r'banish(?:es)?\s+(?:a|one|an?|another)\s+', text):
@@ -857,11 +991,19 @@ class CRAbilityParser:
                 raw_text="as you play",
             ))
 
-        # Put on top of deck
-        if re.search(r'put\s+(?:target\s+)?.*?on\s+top\s+of\s+(?:its\s+)?owner\'?s?\s+(?:main\s+)?deck', text):
+        # Put on top of deck - handles "put X on top of your/owner's deck"
+        if re.search(r'put\s+(?:target\s+|a\s+)?.*?on\s+top\s+of\s+(?:its\s+|your\s+)?(?:owner\'?s?\s+)?(?:main\s+)?deck', text):
             effects.append(ParsedEffect(
                 action=EffectAction.PUT_ON_TOP_OF_DECK,
                 raw_text="put on top of deck",
+            ))
+
+        # Put into magic stone area (FoW specific)
+        if re.search(r'put\s+(?:it\s+)?into\s+(?:your\s+)?magic\s+stone\s+area', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.PUT_INTO_FIELD,
+                params={'destination': 'stone_area'},
+                raw_text="put into magic stone area",
             ))
 
         # Prevent next damage (by/to)
@@ -983,6 +1125,173 @@ class CRAbilityParser:
                 params={'any_color': True},
                 raw_text="produce any will",
             ))
+
+        # ====== CR 1014: LOOK - Look at cards without revealing ======
+        look_match = re.search(r'look\s+at\s+(?:the\s+)?top\s+(\d+|a|an|one|two|three|four|five)\s+cards?\s+of', text)
+        if look_match:
+            count = self._word_to_number(look_match.group(1))
+            effects.append(ParsedEffect(
+                action=EffectAction.LOOK,
+                params={'count': count, 'zone': 'deck'},
+                raw_text=look_match.group(0),
+            ))
+
+        # ====== CR 1034: FORESEE (Scry-like) ======
+        foresee_match = re.search(r'foresee\s+(\d+)', text)
+        if foresee_match:
+            effects.append(ParsedEffect(
+                action=EffectAction.LOOK,
+                params={'count': int(foresee_match.group(1)), 'foresee': True},
+                raw_text=foresee_match.group(0),
+            ))
+
+        # ====== CR 1006: SUMMON ======
+        if re.search(r'summon\s+(?:a\s+)?(?:target\s+)?(?:\w+\s+)?resonator', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.SUMMON,
+                raw_text="summon resonator",
+            ))
+
+        # ====== CR 1017: COPY (spell/ability) ======
+        if re.search(r'copy\s+(?:target\s+)?(?:spell|ability|activate\s+ability)', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.COPY,
+                params={'type': 'spell'},
+                raw_text="copy spell",
+            ))
+
+        # Copy entity (creates token)
+        if re.search(r'copy\s+(?:target\s+)?(?:resonator|j/resonator|entity)', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.COPY,
+                params={'type': 'entity'},
+                raw_text="copy entity",
+            ))
+
+        # ====== CR 1017: BECOME_COPY ======
+        if re.search(r'becomes?\s+(?:a\s+)?copy\s+of', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.BECOME_COPY,
+                raw_text="becomes a copy of",
+            ))
+
+        # ====== CR 1007: REMOVE_DAMAGE ======
+        # "Remove all damage from" / "remove X damage from"
+        remove_damage_match = re.search(r'remove\s+(?:all\s+)?(?:(\d+)\s+)?damage\s+(?:from|that\s+was\s+dealt)', text)
+        if remove_damage_match:
+            amount = remove_damage_match.group(1)
+            effects.append(ParsedEffect(
+                action=EffectAction.REMOVE_DAMAGE,
+                params={'amount': int(amount) if amount else 0, 'all': 'all' in text},
+                raw_text=remove_damage_match.group(0),
+            ))
+
+        # Heal (alternative to remove damage)
+        if re.search(r'heal\s+(?:target\s+)?(?:j/resonator|resonator)', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.REMOVE_DAMAGE,
+                params={'all': True},
+                raw_text="heal",
+            ))
+
+        # ====== Put on bottom of deck ======
+        if re.search(r'put\s+(?:target\s+|a\s+)?.*?on\s+(?:the\s+)?bottom\s+of\s+(?:its\s+|your\s+)?(?:owner\'?s?\s+)?(?:main\s+)?deck', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.PUT_ON_BOTTOM_OF_DECK,
+                raw_text="put on bottom of deck",
+            ))
+
+        # ====== CR 1016: CALL magic stone ======
+        if re.search(r'call\s+(?:a\s+)?(?:target\s+)?magic\s+stone', text):
+            effects.append(ParsedEffect(
+                action=EffectAction.GRANT_ABILITY,
+                params={'call_stone': True},
+                raw_text="call magic stone",
+            ))
+
+        # ====== Put into graveyard directly (not destroy) ======
+        put_gy_match = re.search(r'put\s+(?:target\s+|a\s+)?(.+?)\s+into\s+(?:its\s+|your\s+|a\s+)?(?:owner\'?s?\s+)?graveyard', text)
+        if put_gy_match and 'from' not in text:  # Exclude "from X into graveyard" which is zone movement
+            effects.append(ParsedEffect(
+                action=EffectAction.PUT_INTO_GRAVEYARD,
+                raw_text=put_gy_match.group(0),
+            ))
+
+        # ====== SET_LIFE ======
+        set_life_match = re.search(r'(?:life|your\s+life)\s+becomes?\s+(\d+)', text)
+        if set_life_match:
+            effects.append(ParsedEffect(
+                action=EffectAction.SET_LIFE,
+                params={'amount': int(set_life_match.group(1))},
+                raw_text=set_life_match.group(0),
+            ))
+
+        # ====== GRANT_RACE ======
+        grant_race_match = re.search(r'gains?\s+(?:the\s+)?(?:race\s+)?\"?(\w+)\"?\s+(?:race|in\s+addition)', text)
+        if grant_race_match:
+            effects.append(ParsedEffect(
+                action=EffectAction.GRANT_RACE,
+                params={'race': grant_race_match.group(1)},
+                raw_text=grant_race_match.group(0),
+            ))
+
+        # Becomes race (replaces current)
+        becomes_race_match = re.search(r'becomes?\s+(?:a\s+)?\"?(\w+)\"?\s+(?:resonator|in\s+addition\s+to)', text)
+        if becomes_race_match and 'copy' not in text:  # Exclude "becomes a copy"
+            effects.append(ParsedEffect(
+                action=EffectAction.GRANT_RACE,
+                params={'race': becomes_race_match.group(1), 'replace': True},
+                raw_text=becomes_race_match.group(0),
+            ))
+
+        # ====== SET_ATTRIBUTE / GRANT_ATTRIBUTE ======
+        if re.search(r'gains?\s+(?:the\s+)?(fire|water|wind|light|darkness)\s+attribute', text):
+            attr_match = re.search(r'(fire|water|wind|light|darkness)', text)
+            if attr_match:
+                effects.append(ParsedEffect(
+                    action=EffectAction.GRANT_ATTRIBUTE,
+                    params={'attribute': attr_match.group(1).upper()},
+                    raw_text=attr_match.group(0),
+                ))
+
+        if re.search(r'becomes?\s+(?:a\s+)?(fire|water|wind|light|darkness)\s+(?:card|resonator|entity)', text):
+            attr_match = re.search(r'becomes?\s+(?:a\s+)?(fire|water|wind|light|darkness)', text)
+            if attr_match:
+                effects.append(ParsedEffect(
+                    action=EffectAction.SET_ATTRIBUTE,
+                    params={'attribute': attr_match.group(1).upper()},
+                    raw_text=attr_match.group(0),
+                ))
+
+        # ====== SET_ATK / SET_DEF ======
+        set_stats_match = re.search(r'(?:atk|def)\s+(?:becomes?|is)\s+(\d+)', text)
+        if set_stats_match:
+            effects.append(ParsedEffect(
+                action=EffectAction.SET_ATK if 'atk' in text else EffectAction.SET_DEF,
+                params={'value': int(set_stats_match.group(1))},
+                raw_text=set_stats_match.group(0),
+            ))
+
+        # Becomes [X/Y] (sets both)
+        becomes_stats_match = re.search(r'becomes?\s+(?:a\s+)?\[?(\d+)/(\d+)\]?', text)
+        if becomes_stats_match:
+            effects.append(ParsedEffect(
+                action=EffectAction.SET_ATK,
+                params={'atk': int(becomes_stats_match.group(1)), 'def': int(becomes_stats_match.group(2))},
+                raw_text=becomes_stats_match.group(0),
+            ))
+
+        # ====== REMOVE_KEYWORD ======
+        if re.search(r'loses?\s+\[?(\w+)\]?(?:\s+until|\s+as\s+long)', text):
+            keyword_match = re.search(r'loses?\s+\[?(\w+)\]?', text)
+            if keyword_match:
+                kw = keyword_match.group(1).lower()
+                if kw in self.GRIMM_KEYWORDS:
+                    effects.append(ParsedEffect(
+                        action=EffectAction.REMOVE_KEYWORD,
+                        params={'keyword': self.GRIMM_KEYWORDS[kw]},
+                        raw_text=keyword_match.group(0),
+                    ))
 
         return effects
 

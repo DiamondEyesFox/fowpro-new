@@ -239,18 +239,12 @@ class RulesCardScript(ABC):
     # =========================================================================
 
     def on_enter_field(self, game: 'GameEngine', card: 'Card'):
-        """Called when card enters the field."""
-        # Check for [Enter] abilities
-        for ability in self._abilities:
-            if isinstance(ability, AutomaticAbility):
-                if ability.trigger_condition == TriggerCondition.ENTER_FIELD:
-                    if ability.can_trigger(game, card, TriggerCondition.ENTER_FIELD, {}):
-                        ability.trigger(game, card, {})
-                        # If mandatory or immediate, execute now
-                        if ability.is_mandatory or ability.trigger_timing == TriggerTiming.IMMEDIATE:
-                            ability.resolve(game, card, card.controller)
+        """Called when card enters the field.
 
-        # Also run old-style triggers
+        NOTE: AutomaticAbility triggers are now handled by the engine's
+        APNAPTriggerManager (CR 906). This hook is only for legacy effects.
+        """
+        # Only run legacy old-style triggers (new ones handled by APNAPTriggerManager)
         for effect in self._old_effects:
             if effect.effect_type == OldEffectType.TRIGGER_ENTER:
                 if not effect.condition or effect.condition(game, card):
@@ -258,15 +252,10 @@ class RulesCardScript(ABC):
                         effect.operation(game, card)
 
     def on_leave_field(self, game: 'GameEngine', card: 'Card'):
-        """Called when card leaves the field."""
-        for ability in self._abilities:
-            if isinstance(ability, AutomaticAbility):
-                if ability.trigger_condition == TriggerCondition.LEAVE_FIELD:
-                    if ability.can_trigger(game, card, TriggerCondition.LEAVE_FIELD, {}):
-                        ability.trigger(game, card, {})
-                        if ability.is_mandatory or ability.trigger_timing == TriggerTiming.IMMEDIATE:
-                            ability.resolve(game, card, card.controller)
+        """Called when card leaves the field.
 
+        NOTE: AutomaticAbility triggers handled by APNAPTriggerManager.
+        """
         for effect in self._old_effects:
             if effect.effect_type == OldEffectType.TRIGGER_LEAVE:
                 if not effect.condition or effect.condition(game, card):
@@ -274,60 +263,43 @@ class RulesCardScript(ABC):
                         effect.operation(game, card)
 
     def on_attack(self, game: 'GameEngine', card: 'Card'):
-        """Called when card attacks."""
-        for ability in self._abilities:
-            if isinstance(ability, AutomaticAbility):
-                if ability.trigger_condition == TriggerCondition.DECLARES_ATTACK:
-                    if ability.can_trigger(game, card, TriggerCondition.DECLARES_ATTACK, {}):
-                        ability.trigger(game, card, {})
-                        if ability.is_mandatory:
-                            ability.resolve(game, card, card.controller)
+        """Called when card attacks.
+
+        NOTE: AutomaticAbility triggers handled by APNAPTriggerManager.
+        """
+        pass  # Attack triggers handled by APNAPTriggerManager
 
     def on_recover(self, game: 'GameEngine', card: 'Card'):
-        """Called when card recovers (untaps)."""
-        for ability in self._abilities:
-            if isinstance(ability, AutomaticAbility):
-                if ability.trigger_condition == TriggerCondition.RECOVERED:
-                    if ability.can_trigger(game, card, TriggerCondition.RECOVERED, {}):
-                        ability.trigger(game, card, {})
-                        if ability.is_mandatory:
-                            ability.resolve(game, card, card.controller)
+        """Called when card recovers (untaps).
+
+        NOTE: AutomaticAbility triggers handled by APNAPTriggerManager.
+        """
+        pass  # Recovery triggers handled by APNAPTriggerManager
 
     def on_rest(self, game: 'GameEngine', card: 'Card'):
         """Called when card rests (taps)."""
         pass
 
     def on_turn_start(self, game: 'GameEngine', card: 'Card'):
-        """Called at start of controller's turn."""
-        # Reset once-per-turn flags
+        """Called at start of controller's turn.
+
+        Resets per-turn ability flags. Trigger firing handled by APNAPTriggerManager.
+        """
+        # Reset once-per-turn flags for legacy effects
         for effect in self._old_effects:
             effect._activated_this_turn = False
 
-        # Reset ability trigger counts
+        # Reset ability flags (triggers are reset by RulesEngine.triggers.reset_turn())
         for ability in self._abilities:
-            if isinstance(ability, AutomaticAbility):
-                ability.reset_turn()
-            elif isinstance(ability, ActivateAbility):
+            if isinstance(ability, ActivateAbility):
                 ability.used_this_turn = False
 
-        # Check for turn start triggers
-        for ability in self._abilities:
-            if isinstance(ability, AutomaticAbility):
-                if ability.trigger_condition == TriggerCondition.TURN_START:
-                    if ability.can_trigger(game, card, TriggerCondition.TURN_START, {}):
-                        ability.trigger(game, card, {})
-                        if ability.is_mandatory:
-                            ability.resolve(game, card, card.controller)
-
     def on_turn_end(self, game: 'GameEngine', card: 'Card'):
-        """Called at end of turn."""
-        for ability in self._abilities:
-            if isinstance(ability, AutomaticAbility):
-                if ability.trigger_condition == TriggerCondition.TURN_END:
-                    if ability.can_trigger(game, card, TriggerCondition.TURN_END, {}):
-                        ability.trigger(game, card, {})
-                        if ability.is_mandatory:
-                            ability.resolve(game, card, card.controller)
+        """Called at end of turn.
+
+        NOTE: AutomaticAbility triggers handled by APNAPTriggerManager.
+        """
+        pass  # End-of-turn triggers handled by APNAPTriggerManager
 
     # =========================================================================
     # MAGIC STONE SUPPORT
@@ -337,14 +309,22 @@ class RulesCardScript(ABC):
         """
         Get will colors this card can produce.
 
-        Checks for WillAbility registered on the card.
+        Checks for WillAbility and ActivateAbility with produce_will effects.
         """
         from ..models import Attribute
+        from ..rules.types import EffectAction
 
         colors = []
         for ability in self._abilities:
             if isinstance(ability, WillAbility):
                 colors.extend(ability.will_colors)
+            elif isinstance(ability, ActivateAbility):
+                # Check if this activate ability produces will
+                for effect in ability.effects:
+                    if hasattr(effect, 'action') and effect.action == EffectAction.PRODUCE_WILL:
+                        attr = effect.params.get('attribute')
+                        if attr and attr not in colors:
+                            colors.append(attr)
 
         return colors
 
@@ -353,13 +333,28 @@ class RulesCardScript(ABC):
         """
         Produce will of the chosen color.
 
-        Finds matching WillAbility and executes it per CR 907.
+        Finds matching WillAbility or ActivateAbility and executes it.
         """
+        from ..rules.types import EffectAction
+
+        # First check WillAbility (CR 907)
         for ability in self._abilities:
             if isinstance(ability, WillAbility):
                 if chosen_color in ability.will_colors:
                     return ability.resolve(game, card, card.controller,
                                           choices={'color': chosen_color})
+
+        # Also check ActivateAbility with produce_will effect (mana dorks)
+        for ability in self._abilities:
+            if isinstance(ability, ActivateAbility):
+                for effect in ability.effects:
+                    if hasattr(effect, 'action') and effect.action == EffectAction.PRODUCE_WILL:
+                        attr = effect.params.get('attribute')
+                        if attr == chosen_color:
+                            # Execute this ability
+                            if ability.can_play(game, card, card.controller):
+                                return ability.resolve(game, card, card.controller,
+                                                      choices={'color': chosen_color})
         return False
 
     # =========================================================================

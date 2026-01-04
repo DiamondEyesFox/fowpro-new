@@ -170,10 +170,10 @@ class JumpToTheSky(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (DEALS_DAMAGE)
         self.register_ability(AutomaticAbility(
             name="When a resonator you control deals damag",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.DEALS_DAMAGE,
             effects=[],
             is_mandatory=False,
         ))
@@ -378,6 +378,17 @@ class SeekingSkySoldier(RulesCardScript):
     Enter : You may look the top card of your opponent's main deck.
     """
 
+    def initial_effect(self, game, card):
+        """Register abilities when card is created."""
+        # [Enter] ability
+        self.register_ability(AutomaticAbility(
+            name="You may look the top card of your oppone",
+            trigger_condition=TriggerCondition.ENTER_FIELD,
+            effects=[],
+            is_mandatory=False,
+        ))
+
+
     def get_keywords(self) -> KeywordAbility:
         return KeywordAbility.FLYING | KeywordAbility.UNBLOCKABLE
 
@@ -443,10 +454,10 @@ class BigbangRevolution(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (DESTROYED)
         self.register_ability(AutomaticAbility(
             name="When a resonator you control is destroye",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.DESTROYED,
             effects=[],
             is_mandatory=True,
         ))
@@ -463,10 +474,10 @@ class CardSoldierDiamond(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (PUT_INTO_GRAVEYARD)
         self.register_ability(AutomaticAbility(
             name="When this card is put into a graveyard f",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
             effects=[EffectBuilder.deal_damage(200)],
             is_mandatory=True,
         ))
@@ -554,14 +565,14 @@ class FalltgoldTheDragoon(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Banish a fire resonator.",
-            effects=[],
+            effects=[EffectBuilder.banish()],
         ))
 
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="{Rest} : Search your main deck for a Dra",
             tap_cost=True,
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
         ))
 
 
@@ -578,6 +589,14 @@ class BahamutTheDragonKing(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
+        # [Enter] ability
+        self.register_ability(AutomaticAbility(
+            name="This card deals damage to target resonat",
+            trigger_condition=TriggerCondition.ENTER_FIELD,
+            effects=[],
+            is_mandatory=True,
+        ))
+
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Banish a fire resonator: This card gains",
@@ -808,6 +827,17 @@ class YamatanoorochiTheEightDisasters(RulesCardScript):
     Continuous : When this card is put into a graveyard from your field, you may search your main deck for a card named " Kusanagi Sword " and add it to a resonator. Then shuffle your main deck.
     """
 
+    def initial_effect(self, game, card):
+        """Register abilities when card is created."""
+        # Triggered ability (PUT_INTO_GRAVEYARD)
+        self.register_ability(AutomaticAbility(
+            name="When this card is put into a graveyard f",
+            trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
+            effects=[],
+            is_mandatory=False,
+        ))
+
+
     def get_keywords(self) -> KeywordAbility:
         return KeywordAbility.SWIFTNESS | KeywordAbility.TARGET_ATTACK
 
@@ -844,7 +874,7 @@ class AliceTheDrifterInTheWorld(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="If you paid{W} for doing judgment, you g",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.draw(1), EffectBuilder.deal_damage(1000), EffectBuilder.deal_damage(1000), EffectBuilder.destroy(), EffectBuilder.gain_life(1000)],
+            effects=[EffectBuilder.draw(1), EffectBuilder.deal_damage(1000), EffectBuilder.deal_damage(1000), EffectBuilder.destroy(), EffectBuilder.gain_life(1000), EffectBuilder.discard(1)],
             is_mandatory=True,
         ))
 
@@ -864,6 +894,14 @@ class AlicesWorld(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
+        # [Enter] ability
+        self.register_ability(AutomaticAbility(
+            name="Take an extra turn after this one.",
+            trigger_condition=TriggerCondition.ENTER_FIELD,
+            effects=[],
+            is_mandatory=True,
+        ))
+
         # [Continuous] ability
         # Complex continuous effect (needs manual implementation)
         # For each resonator you control that doesn\'t share any race with other 
@@ -879,6 +917,25 @@ class CheshireCatTheGrinningRemnant(RulesCardScript):
     Enter : Draw two cards, then put a card from your hand on top of your main deck.
     Continuous : When this card it put into a graveyard from a field, shuffle it into its owner's main deck.
     """
+
+    def initial_effect(self, game, card):
+        """Register abilities when card is created."""
+        # [Enter] ability
+        self.register_ability(AutomaticAbility(
+            name="Draw two cards, then put a card from you",
+            trigger_condition=TriggerCondition.ENTER_FIELD,
+            effects=[EffectBuilder.draw(2), EffectBuilder.put_on_top_of_deck()],
+            is_mandatory=True,
+        ))
+
+        # Triggered ability (PUT_INTO_GRAVEYARD)
+        self.register_ability(AutomaticAbility(
+            name="When this card it put into a graveyard f",
+            trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
+            effects=[EffectBuilder.shuffle_into_deck()],
+            is_mandatory=True,
+        ))
+
 
     def get_keywords(self) -> KeywordAbility:
         return KeywordAbility.BARRIER
@@ -910,10 +967,10 @@ class DestructiveFlow(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (TURN_END)
         self.register_ability(AutomaticAbility(
             name="At the end of a turn you\'re dealt damage",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.TURN_END,
             effects=[EffectBuilder.return_to_hand()],
             is_mandatory=False,
         ))
@@ -950,7 +1007,7 @@ class HumptyDumpty(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{U} , banish this card: Reveal the top c",
             will_cost=WillCost(water=1),
-            effects=[],
+            effects=[EffectBuilder.reveal_top()],
         ))
 
 
@@ -966,10 +1023,10 @@ class LittleMermaidOfTragicLove(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (PUT_INTO_GRAVEYARD)
         self.register_ability(AutomaticAbility(
             name="When this card is put into a graveyard f",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
             effects=[EffectBuilder.draw(1)],
             is_mandatory=True,
         ))
@@ -1033,7 +1090,7 @@ class MarchHare(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Whenever this card attacks, reveal the t",
             trigger_condition=TriggerCondition.DECLARES_ATTACK,
-            effects=[],
+            effects=[EffectBuilder.reveal_top(), EffectBuilder.redirect_damage()],
             is_mandatory=True,
         ))
 
@@ -1052,7 +1109,7 @@ class RiinaTheGirlWithNothing(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{0} : Target resonator you control lo",
-            effects=[],
+            effects=[EffectBuilder.remove_all_abilities()],
         ))
 
 
@@ -1071,7 +1128,7 @@ class SeashoreFisherman(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{Rest} : Reveal the top card of your mai",
             tap_cost=True,
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.rest()],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.rest(), EffectBuilder.reveal_top()],
         ))
 
 
@@ -1086,10 +1143,10 @@ class ShallowsGiantDolphin(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (DECLARES_BLOCK)
         self.register_ability(AutomaticAbility(
             name="Whenever this card blocks, rest target r",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.DECLARES_BLOCK,
             effects=[EffectBuilder.rest()],
             is_mandatory=True,
         ))
@@ -1151,7 +1208,7 @@ class WitchsDagger(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        # Continuous effect with: DESTROY
+        # Continuous effect with: DRAW, DESTROY
         # Resonator with this gains \" Activate Pay{U} {U} {2} {Rest} : Destroy t
 
 
@@ -1195,19 +1252,19 @@ class CowardlyLion(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
-        self.register_ability(AutomaticAbility(
-            name="Whenever this card deals damage to your ",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.add_counter("achievement")],
-            is_mandatory=True,
-        ))
-
         # [Continuous] ability
         self.register_ability(AbilityFactory.continuous_buff(
             atk=300,
             def_=300,
             name="This card gains [+300/+300] fo",
+        ))
+
+        # Triggered ability (DEALS_DAMAGE)
+        self.register_ability(AutomaticAbility(
+            name="Whenever this card deals damage to your ",
+            trigger_condition=TriggerCondition.DEALS_DAMAGE,
+            effects=[EffectBuilder.add_counter("achievement")],
+            is_mandatory=True,
         ))
 
 
@@ -1273,17 +1330,17 @@ class DorothyTheLostGirl(RulesCardScript):
         self.awakening_cost = AwakeningCost(wind=1)
         # Enhanced effect triggers when awakening cost is paid
 
-        # [Enter] ability
-        self.register_ability(AutomaticAbility(
-            name="Whenever this card deals damage to your ",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
-            is_mandatory=True,
-        ))
-
         # [Continuous] ability
         # Continuous effect with: RETURN_TO_HAND
         # Awakening{G} : Enter : Reveal top five cards of your main deck. Put an
+
+        # Triggered ability (DEALS_DAMAGE)
+        self.register_ability(AutomaticAbility(
+            name="Whenever this card deals damage to your ",
+            trigger_condition=TriggerCondition.DEALS_DAMAGE,
+            effects=[],
+            is_mandatory=True,
+        ))
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1345,6 +1402,14 @@ class GardeaTheGuardianDragonOfHeaven(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
+        # [Enter] ability
+        self.register_ability(AutomaticAbility(
+            name="Search your magic stone deck for a card.",
+            trigger_condition=TriggerCondition.ENTER_FIELD,
+            effects=[],
+            is_mandatory=True,
+        ))
+
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="{Rest} : Target resonator you control ga",
@@ -1365,6 +1430,14 @@ class GlindaTheFairy(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
+        # [Enter] ability
+        self.register_ability(AutomaticAbility(
+            name="Target resonator cannot be blocked until",
+            trigger_condition=TriggerCondition.ENTER_FIELD,
+            effects=[],
+            is_mandatory=True,
+        ))
+
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Banish this card: Cancel target normal s",
@@ -1395,7 +1468,7 @@ class GuideOfHeaven(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{Rest} : Reveal the top card of your mai",
             tap_cost=True,
-            effects=[EffectBuilder.return_to_hand()],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.reveal_top()],
         ))
 
         # [Continuous] ability
@@ -1449,7 +1522,7 @@ class OzTheGreatWizard(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for a spell card w",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
             is_mandatory=False,
         ))
 
@@ -1506,7 +1579,7 @@ class RealmOfEvolution(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{G} , banish this card: Search your main",
             will_cost=WillCost(wind=1),
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
         ))
 
         # [Continuous] ability
@@ -1626,10 +1699,10 @@ class AlhaberTheTowerOfDespair(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (PUT_INTO_GRAVEYARD)
         self.register_ability(AutomaticAbility(
             name="When a resonator your opponent controls ",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
             effects=[EffectBuilder.add_counter("despair")],
             is_mandatory=True,
         ))
@@ -1650,7 +1723,7 @@ class CardSoldierClub(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Reveal the top four cards of your main d",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand()],
+            effects=[EffectBuilder.return_from_graveyard()],
             is_mandatory=True,
         ))
 
@@ -1689,7 +1762,7 @@ class DeathSentenceFromTheQueen(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="While a resonator your opponent controls",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
+            effects=[EffectBuilder.banish(), EffectBuilder.opponent_banishes()],
             is_mandatory=False,
         ))
 
@@ -1786,7 +1859,7 @@ class AbdulAlhazredTheHarbingerOfDespair(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="{0} : Target resonator or addition loses",
-            effects=[],
+            effects=[EffectBuilder.remove_all_abilities()],
         ))
 
 
@@ -1826,6 +1899,14 @@ class JokersSuit(RulesCardScript):
             atk=200,
             def_=200,
             name="Resonator with this gains [+20",
+        ))
+
+        # Triggered ability (PUT_INTO_GRAVEYARD)
+        self.register_ability(AutomaticAbility(
+            name="When this card is put into a graveyard f",
+            trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
+            effects=[],
+            is_mandatory=False,
         ))
 
 
@@ -1937,7 +2018,7 @@ class QueenOfHearts(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Put up to one target card named \"Card So",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand()],
+            effects=[EffectBuilder.return_from_graveyard()],
             is_mandatory=True,
         ))
 

@@ -26,6 +26,359 @@ from .choice_dialogs import (
     TargetSelectionDialog, ModalChoiceDialog, YesNoDialog,
     XValueDialog, CardListDialog, AttributeChoiceDialog
 )
+from ..ai import RandomAI, AggressiveAI, DefensiveAI, PassOnlyAI, AIAction
+from ..ai.base import AIExecutor, ActionType
+
+
+# =============================================================================
+# DUEL LOBBY DIALOG (YGOPro-style pre-game setup)
+# =============================================================================
+
+class DuelLobbyDialog(QDialog):
+    """
+    Pre-game lobby dialog for setting up a duel.
+    Inspired by YGOPro/EDOPro's host game dialog.
+
+    Features:
+    - Deck selection from available .fdk files
+    - AI opponent type selection (Random, Aggressive, Defensive, Pass-Only)
+    - Game settings (opponent autopass, AI thinking delay)
+    """
+
+    # AI types available for selection
+    AI_TYPES = [
+        ("Random AI", "Makes semi-random decisions. Good for general practice.", RandomAI),
+        ("Aggressive AI", "Prioritizes attacking and dealing damage.", AggressiveAI),
+        ("Defensive AI", "Prioritizes blocking and survival.", DefensiveAI),
+        ("Pass-Only (Goldfish)", "Always passes priority. For combo practice.", PassOnlyAI),
+    ]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Duel Setup")
+        self.setMinimumSize(500, 400)
+        self.setModal(True)
+
+        # Result storage
+        self.selected_deck_path: Optional[Path] = None
+        self.selected_ai_class = RandomAI
+        self.opponent_autopass = False
+        self.ai_delay = 300  # ms between AI actions
+
+        self._setup_ui()
+        self._load_decks()
+        self._apply_styles()
+
+    def _setup_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(16)
+        layout.setContentsMargins(20, 20, 20, 20)
+
+        # Title
+        title = QLabel("Duel Setup")
+        title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # DECK SELECTION SECTION
+        # ─────────────────────────────────────────────────────────────────────
+        deck_group = QFrame()
+        deck_group.setObjectName("lobbySection")
+        deck_layout = QVBoxLayout(deck_group)
+        deck_layout.setSpacing(8)
+
+        deck_header = QLabel("Your Deck")
+        deck_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        deck_layout.addWidget(deck_header)
+
+        self.deck_combo = QComboBox()
+        self.deck_combo.setMinimumHeight(36)
+        self.deck_combo.currentIndexChanged.connect(self._on_deck_changed)
+        deck_layout.addWidget(self.deck_combo)
+
+        # Deck info label
+        self.deck_info = QLabel("No deck selected")
+        self.deck_info.setWordWrap(True)
+        deck_layout.addWidget(self.deck_info)
+
+        layout.addWidget(deck_group)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # AI OPPONENT SECTION
+        # ─────────────────────────────────────────────────────────────────────
+        ai_group = QFrame()
+        ai_group.setObjectName("lobbySection")
+        ai_layout = QVBoxLayout(ai_group)
+        ai_layout.setSpacing(8)
+
+        ai_header = QLabel("AI Opponent")
+        ai_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        ai_layout.addWidget(ai_header)
+
+        self.ai_combo = QComboBox()
+        self.ai_combo.setMinimumHeight(36)
+        for name, desc, ai_class in self.AI_TYPES:
+            self.ai_combo.addItem(name, ai_class)
+        self.ai_combo.currentIndexChanged.connect(self._on_ai_changed)
+        ai_layout.addWidget(self.ai_combo)
+
+        # AI description
+        self.ai_desc = QLabel(self.AI_TYPES[0][1])
+        self.ai_desc.setWordWrap(True)
+        ai_layout.addWidget(self.ai_desc)
+
+        layout.addWidget(ai_group)
+
+        # ─────────────────────────────────────────────────────────────────────
+        # GAME SETTINGS SECTION
+        # ─────────────────────────────────────────────────────────────────────
+        settings_group = QFrame()
+        settings_group.setObjectName("lobbySection")
+        settings_layout = QVBoxLayout(settings_group)
+        settings_layout.setSpacing(8)
+
+        settings_header = QLabel("Game Settings")
+        settings_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
+        settings_layout.addWidget(settings_header)
+
+        # Opponent auto-pass checkbox
+        self.autopass_check = QCheckBox("Opponent Auto-Pass (AI passes immediately)")
+        self.autopass_check.setToolTip(
+            "When enabled, the AI will pass priority immediately without delay.\n"
+            "Useful for faster games or testing."
+        )
+        settings_layout.addWidget(self.autopass_check)
+
+        # AI thinking delay checkbox
+        self.ai_delay_check = QCheckBox("Show AI thinking (adds delay between actions)")
+        self.ai_delay_check.setChecked(True)
+        self.ai_delay_check.setToolTip(
+            "When enabled, adds a short delay between AI actions\n"
+            "so you can follow what the AI is doing."
+        )
+        settings_layout.addWidget(self.ai_delay_check)
+
+        layout.addWidget(settings_group)
+
+        # Spacer
+        layout.addStretch()
+
+        # ─────────────────────────────────────────────────────────────────────
+        # BUTTONS
+        # ─────────────────────────────────────────────────────────────────────
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(12)
+
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.setMinimumSize(120, 40)
+        cancel_btn.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_btn)
+
+        button_layout.addStretch()
+
+        self.start_btn = QPushButton("Start Duel")
+        self.start_btn.setMinimumSize(160, 40)
+        self.start_btn.setDefault(True)
+        self.start_btn.clicked.connect(self._on_start)
+        button_layout.addWidget(self.start_btn)
+
+        layout.addLayout(button_layout)
+
+    def _apply_styles(self):
+        self.setStyleSheet(f"""
+            QDialog {{
+                background-color: {Colors.BG_DARK};
+            }}
+            QLabel {{
+                color: {Colors.TEXT_PRIMARY};
+                background: transparent;
+            }}
+            QFrame#lobbySection {{
+                background-color: {Colors.SURFACE};
+                border: 1px solid {Colors.BORDER_DARK};
+                border-radius: 8px;
+                padding: 12px;
+            }}
+            QComboBox {{
+                background-color: {Colors.BG_MEDIUM};
+                border: 1px solid {Colors.BORDER_MEDIUM};
+                border-radius: 4px;
+                padding: 8px 12px;
+                color: {Colors.TEXT_PRIMARY};
+                font-size: 14px;
+            }}
+            QComboBox:hover {{
+                border-color: {Colors.PRIMARY};
+            }}
+            QComboBox::drop-down {{
+                border: none;
+                width: 30px;
+            }}
+            QComboBox::down-arrow {{
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid {Colors.TEXT_SECONDARY};
+                margin-right: 10px;
+            }}
+            QComboBox QAbstractItemView {{
+                background-color: {Colors.BG_MEDIUM};
+                border: 1px solid {Colors.BORDER_MEDIUM};
+                color: {Colors.TEXT_PRIMARY};
+                selection-background-color: {Colors.PRIMARY};
+            }}
+            QCheckBox {{
+                color: {Colors.TEXT_PRIMARY};
+                spacing: 8px;
+            }}
+            QCheckBox::indicator {{
+                width: 18px;
+                height: 18px;
+                border: 2px solid {Colors.BORDER_MEDIUM};
+                border-radius: 4px;
+                background-color: {Colors.BG_MEDIUM};
+            }}
+            QCheckBox::indicator:checked {{
+                background-color: {Colors.PRIMARY};
+                border-color: {Colors.PRIMARY};
+            }}
+            QPushButton {{
+                background-color: {Colors.SURFACE};
+                border: 1px solid {Colors.BORDER_MEDIUM};
+                border-radius: 6px;
+                color: {Colors.TEXT_PRIMARY};
+                font-size: 14px;
+                font-weight: bold;
+                padding: 8px 16px;
+            }}
+            QPushButton:hover {{
+                background-color: {Colors.BG_MEDIUM};
+                border-color: {Colors.PRIMARY};
+            }}
+            QPushButton:pressed {{
+                background-color: {Colors.BG_DARK};
+            }}
+            QPushButton#startBtn {{
+                background-color: {Colors.PRIMARY};
+                border-color: {Colors.PRIMARY};
+            }}
+            QPushButton#startBtn:hover {{
+                background-color: {Colors.PRIMARY}cc;
+            }}
+        """)
+        self.start_btn.setObjectName("startBtn")
+
+    def _load_decks(self):
+        """Load available decks from the decks directory."""
+        self.deck_combo.clear()
+
+        # Find decks directory
+        base_path = Path(__file__).parent.parent.parent
+        decks_dir = base_path / "decks"
+
+        if not decks_dir.exists():
+            self.deck_combo.addItem("No decks found", None)
+            self.start_btn.setEnabled(False)
+            return
+
+        # Find all .fdk files
+        deck_files = sorted(decks_dir.glob("*.fdk"))
+
+        if not deck_files:
+            self.deck_combo.addItem("No decks found", None)
+            self.start_btn.setEnabled(False)
+            return
+
+        # Try to find the default deck from config
+        default_deck = None
+        config_path = base_path / "config" / "fowpro.json"
+        if config_path.exists():
+            try:
+                with open(config_path) as f:
+                    config = json.load(f)
+                    if 'default_deck' in config:
+                        default_deck = Path(config['default_deck'])
+            except:
+                pass
+
+        # Add decks to combo
+        default_index = 0
+        for i, deck_path in enumerate(deck_files):
+            deck_name = deck_path.stem
+            # Try to load deck to get ruler name
+            try:
+                with open(deck_path) as f:
+                    deck_data = json.load(f)
+                    ruler = deck_data.get('ruler', '')
+                    if ruler:
+                        deck_name = f"{deck_path.stem} ({ruler})"
+            except:
+                pass
+
+            self.deck_combo.addItem(deck_name, deck_path)
+
+            # Check if this is the default
+            if default_deck and (deck_path == default_deck or deck_path.name == default_deck.name):
+                default_index = i
+
+        self.deck_combo.setCurrentIndex(default_index)
+        self._on_deck_changed(default_index)
+
+    def _on_deck_changed(self, index: int):
+        """Handle deck selection change."""
+        deck_path = self.deck_combo.itemData(index)
+        if not deck_path or not Path(deck_path).exists():
+            self.deck_info.setText("No deck selected")
+            self.selected_deck_path = None
+            self.start_btn.setEnabled(False)
+            return
+
+        self.selected_deck_path = Path(deck_path)
+        self.start_btn.setEnabled(True)
+
+        # Load deck info
+        try:
+            with open(deck_path) as f:
+                deck_data = json.load(f)
+                main_count = len(deck_data.get('main', []))
+                stone_count = len(deck_data.get('stones', []))
+                ruler = deck_data.get('ruler', 'Unknown')
+                self.deck_info.setText(
+                    f"Ruler: {ruler}\n"
+                    f"Main Deck: {main_count} cards | Stone Deck: {stone_count} stones"
+                )
+        except Exception as e:
+            self.deck_info.setText(f"Error loading deck info: {e}")
+
+    def _on_ai_changed(self, index: int):
+        """Handle AI selection change."""
+        if 0 <= index < len(self.AI_TYPES):
+            name, desc, ai_class = self.AI_TYPES[index]
+            self.ai_desc.setText(desc)
+            self.selected_ai_class = ai_class
+
+    def _on_start(self):
+        """Handle start button click."""
+        if not self.selected_deck_path:
+            QMessageBox.warning(self, "No Deck", "Please select a deck first.")
+            return
+
+        # Collect settings
+        self.selected_ai_class = self.ai_combo.currentData()
+        self.opponent_autopass = self.autopass_check.isChecked()
+        self.ai_delay = 300 if self.ai_delay_check.isChecked() else 50
+
+        self.accept()
+
+    def get_settings(self) -> dict:
+        """Return the selected settings as a dictionary."""
+        return {
+            'deck_path': self.selected_deck_path,
+            'ai_class': self.selected_ai_class,
+            'opponent_autopass': self.opponent_autopass,
+            'ai_delay': self.ai_delay,
+        }
 
 
 # =============================================================================
@@ -90,6 +443,11 @@ class DuelCardWidget(QFrame):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setStyleSheet("background: transparent;")
         layout.addWidget(self.image_label, stretch=1)
+
+        # Floating ATK/DEF stat label (overlays the card image)
+        self.stats_label = QLabel(self)
+        self.stats_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stats_label.hide()  # Hidden by default, shown for resonators
 
         self._update_display()
 
@@ -174,6 +532,86 @@ class DuelCardWidget(QFrame):
                 border-radius: 4px;
             }}
         """)
+
+        # Update floating ATK/DEF stats overlay
+        self._update_stats_overlay()
+
+    def _update_stats_overlay(self):
+        """Update the floating ATK/DEF stats label for resonators/J-rulers."""
+        if not self.card or self.face_down:
+            self.stats_label.hide()
+            return
+
+        # Only show stats for resonators and J-rulers
+        from ..models import CardType
+        card_type = self.card.data.card_type
+        has_stats = card_type in (CardType.RESONATOR, CardType.J_RULER)
+
+        if not has_stats:
+            self.stats_label.hide()
+            return
+
+        # Get current stats (with modifiers) and base stats
+        base_atk = self.card.data.atk or 0
+        base_def = self.card.data.defense or 0
+
+        # Use current_atk/current_def if available (includes all modifiers)
+        current_atk = getattr(self.card, 'current_atk', None)
+        current_def = getattr(self.card, 'current_def', None)
+
+        # Fall back to effective_atk/effective_def or base values
+        if current_atk is None:
+            current_atk = getattr(self.card, 'effective_atk', base_atk)
+        if current_def is None:
+            current_def = getattr(self.card, 'effective_def', base_def)
+
+        # Determine color based on buff/debuff status
+        atk_color = "#ffffff"  # White for unchanged
+        def_color = "#ffffff"
+        if current_atk > base_atk:
+            atk_color = "#00ff00"  # Green for buffed
+        elif current_atk < base_atk:
+            atk_color = "#ff4444"  # Red for debuffed
+
+        if current_def > base_def:
+            def_color = "#00ff00"
+        elif current_def < base_def:
+            def_color = "#ff4444"
+
+        # Format stats text with colored values
+        stats_text = f"<span style='color:{atk_color}'>{current_atk}</span>/<span style='color:{def_color}'>{current_def}</span>"
+
+        # Style the label
+        font_size = 10 if self.small else 12
+        padding = 2 if self.small else 3
+        self.stats_label.setText(stats_text)
+        self.stats_label.setStyleSheet(f"""
+            QLabel {{
+                background-color: rgba(0, 0, 0, 180);
+                color: white;
+                font-size: {font_size}px;
+                font-weight: bold;
+                font-family: monospace;
+                padding: {padding}px {padding + 2}px;
+                border-radius: 3px;
+            }}
+        """)
+
+        # Position at bottom-right of card
+        self.stats_label.adjustSize()
+        is_rested = self.card.is_rested if self.card else False
+        if is_rested:
+            # For rested cards, position at bottom-left (visual right after rotation)
+            x = 4
+            y = self.height() - self.stats_label.height() - 4
+        else:
+            # For upright cards, position at bottom-right
+            x = self.width() - self.stats_label.width() - 4
+            y = self.height() - self.stats_label.height() - 4
+
+        self.stats_label.move(x, y)
+        self.stats_label.show()
+        self.stats_label.raise_()  # Ensure it's on top
 
     def set_card(self, card):
         self.card = card
@@ -803,6 +1241,13 @@ class DuelScreen(QWidget):
         self._background: QPixmap = None
         self._game_over_shown = False
         self._pending_will = []  # Track will produced for undo: [(attribute, amount, stone_card), ...]
+        self.ai = None  # AI opponent instance
+        self.ai_executor = None  # Executes AI decisions on engine
+
+        # Lobby settings (from DuelLobbyDialog)
+        self.opponent_autopass = False  # AI passes immediately without actions
+        self.ai_delay = 300  # Delay in ms between AI actions
+        self.selected_ai_class = RandomAI  # AI class to instantiate
 
         self._setup_ui()
         self._setup_shortcuts()
@@ -1131,9 +1576,11 @@ class DuelScreen(QWidget):
         self.auto_pass_check.setStyleSheet(f"color: {Colors.TEXT_PRIMARY};")
         settings_layout.addWidget(self.auto_pass_check)
 
-        self.auto_yield_check = QCheckBox("Auto-yield to opponent")
-        self.auto_yield_check.setStyleSheet(f"color: {Colors.TEXT_PRIMARY};")
-        settings_layout.addWidget(self.auto_yield_check)
+        self.opponent_autopass_check = QCheckBox("Opponent Auto-Pass")
+        self.opponent_autopass_check.setToolTip("AI passes priority immediately without taking actions")
+        self.opponent_autopass_check.setStyleSheet(f"color: {Colors.TEXT_PRIMARY};")
+        self.opponent_autopass_check.stateChanged.connect(self._on_opponent_autopass_changed)
+        settings_layout.addWidget(self.opponent_autopass_check)
 
         self.show_hints_check = QCheckBox("Show play hints")
         self.show_hints_check.setChecked(True)
@@ -1190,25 +1637,54 @@ class DuelScreen(QWidget):
     # GAME LOGIC
     # =========================================================================
 
-    def start_new_game(self):
-        """Start a new game"""
+    def show_lobby_and_start(self) -> bool:
+        """
+        Show the duel lobby dialog and start a game with selected settings.
+        Returns True if game started, False if cancelled.
+        """
+        dialog = DuelLobbyDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return False
+
+        # Apply lobby settings
+        settings = dialog.get_settings()
+        self.opponent_autopass = settings['opponent_autopass']
+        self.ai_delay = settings['ai_delay']
+        self.selected_ai_class = settings['ai_class']
+
+        # Start game with selected deck
+        return self.start_new_game(deck_path=settings['deck_path'])
+
+    def start_new_game(self, deck_path: Path = None) -> bool:
+        """
+        Start a new game.
+
+        Args:
+            deck_path: Optional path to deck file. If None, loads from config/default.
+
+        Returns:
+            True if game started successfully, False otherwise.
+        """
         if not self.main_window:
-            return
+            return False
 
         db = self.main_window.get_database()
         if not db:
-            return
+            return False
 
         from ..engine import GameEngine, EventType
         from ..models import CardType
 
-        # Try to load player deck from config/default
-        p0_deck, p0_stones, p0_ruler = self._load_player_deck(db)
+        # Load player deck
+        if deck_path:
+            p0_deck, p0_stones, p0_ruler = self._load_deck_from_path(db, deck_path)
+        else:
+            p0_deck, p0_stones, p0_ruler = self._load_player_deck(db)
 
         if not p0_deck or not p0_stones or not p0_ruler:
             QMessageBox.warning(self, "No Deck",
                 "No deck found. Please create a deck in the Deck Editor and set it as default.")
-            return
+            return False
 
         # Build AI opponent deck (random from available cards)
         all_cards = db.get_all_cards()
@@ -1218,7 +1694,7 @@ class DuelScreen(QWidget):
 
         if not rulers:
             QMessageBox.warning(self, "No Cards", "Not enough cards in database.")
-            return
+            return False
 
         # Pick a different ruler for AI if possible
         p1_ruler = rulers[0]
@@ -1242,10 +1718,59 @@ class DuelScreen(QWidget):
         self.engine.shuffle_decks()
         self.engine.start_game(0)
 
+        # Initialize AI opponent with selected AI class
+        ai_player = 1 - self.human_player
+        self.ai = self.selected_ai_class(ai_player)
+        self.ai_executor = AIExecutor(self.engine)
+        self.ai.on_game_start(self.engine)
+
+        # Reset game state
+        self._game_over_shown = False
+
+        # Sync in-game settings panel with lobby settings
+        self.opponent_autopass_check.setChecked(self.opponent_autopass)
+
         self.game_log.clear()
         self._log("Game started!", Colors.SUCCESS)
+        self._log(f"Opponent: {self.ai.name}", Colors.TEXT_MUTED)
+        if self.opponent_autopass:
+            self._log("(Opponent Auto-Pass enabled)", Colors.TEXT_MUTED)
         self._log(f"Your ruler: {p0_ruler.name}", Colors.INFO)
         self._update_display()
+        return True
+
+    def _load_deck_from_path(self, db, deck_path: Path):
+        """Load a deck from a specific path."""
+        try:
+            with open(deck_path) as f:
+                deck_data = json.load(f)
+
+            # Get ruler
+            ruler_code = deck_data.get('ruler')
+            ruler = db.get_card(ruler_code) if ruler_code else None
+
+            if not ruler:
+                print(f"Ruler not found: {ruler_code}")
+                return None, None, None
+
+            # Load main deck cards (key is 'main' not 'main_deck')
+            main_deck = []
+            for code in deck_data.get('main', []):
+                card = db.get_card(code)
+                if card:
+                    main_deck.append(card)
+
+            # Load stone deck cards (key is 'stones' not 'stone_deck')
+            stone_deck = []
+            for code in deck_data.get('stones', []):
+                card = db.get_card(code)
+                if card:
+                    stone_deck.append(card)
+
+            return main_deck, stone_deck, ruler
+        except Exception as e:
+            print(f"Error loading deck from {deck_path}: {e}")
+            return None, None, None
 
     def _setup_rules_engine(self):
         """Set up the CR-compliant rules engine with UI callbacks"""
@@ -1532,31 +2057,90 @@ class DuelScreen(QWidget):
 
         # Auto-pass logic (MTGO F8 style)
         if self.engine.priority_player != self.human_player:
-            # AI's turn - auto-pass for them
-            QTimer.singleShot(300, self._ai_auto_pass)
+            # AI's turn - use configured delay (or minimal delay for autopass)
+            delay = 50 if self.opponent_autopass else self.ai_delay
+            QTimer.singleShot(delay, self._ai_auto_pass)
         else:
             # Human's turn - auto-pass in phases with no actions
             QTimer.singleShot(150, self._try_human_auto_pass)
 
     def _ai_auto_pass(self):
-        """Auto-pass for AI opponent"""
-        if not self.engine:
+        """AI opponent makes decisions"""
+        if not self.engine or not self.ai:
             return
         if self.engine.priority_player == self.human_player:
-            return  # Already passed back to human
+            return  # Human's priority now
+        if self.engine.game_over:
+            return
 
         ai_player = 1 - self.human_player
 
-        # AI passes priority
-        if self.engine.pass_priority(ai_player):
-            # Both passed - phase advances
-            self.engine.advance_phase()
-            self._log("Opponent passes", Colors.TEXT_MUTED)
+        # If opponent autopass is enabled, always pass immediately
+        if self.opponent_autopass:
+            if self.engine.pass_priority(ai_player):
+                self.engine.advance_phase()
+            self._update_display()
+            # Continue if AI still has priority
+            if self.engine.priority_player != self.human_player and not self.engine.game_over:
+                QTimer.singleShot(50, self._ai_auto_pass)
+            return
+
+        # Get legal actions for AI
+        legal_actions = self.engine.get_legal_actions(ai_player)
+        if not legal_actions:
+            return
+
+        # AI chooses action
+        action = self.ai.choose_action(self.engine, legal_actions)
+
+        # Log and execute the action
+        if action.action_type == ActionType.PASS_PRIORITY:
+            if self.engine.pass_priority(ai_player):
+                self.engine.advance_phase()
+                self._log("Opponent passes", Colors.TEXT_MUTED)
+            else:
+                self._log("Opponent passes priority", Colors.TEXT_MUTED)
         else:
-            # Just passed priority back
-            self._log("Opponent passes priority", Colors.TEXT_MUTED)
+            # Execute non-pass action
+            action_name = self._get_ai_action_description(action)
+            success = self.ai_executor.execute(action, ai_player)
+            if success:
+                self._log(f"Opponent: {action_name}", Colors.WARNING)
+            else:
+                # Action failed, fall back to pass
+                self._log("Opponent passes priority", Colors.TEXT_MUTED)
+                self.engine.pass_priority(ai_player)
 
         self._update_display()
+
+        # If AI still has priority, continue acting
+        if self.engine.priority_player != self.human_player and not self.engine.game_over:
+            QTimer.singleShot(self.ai_delay + 100, self._ai_auto_pass)
+
+    def _get_ai_action_description(self, action: AIAction) -> str:
+        """Get human-readable description of AI action for log"""
+        if action.action_type == ActionType.CALL_STONE:
+            return "calls a stone"
+        elif action.action_type == ActionType.PLAY_CARD:
+            card = self.engine.get_card_by_uid(action.card_uid) if action.card_uid else None
+            return f"plays {card.data.name}" if card else "plays a card"
+        elif action.action_type == ActionType.PLAY_INSTANT:
+            card = self.engine.get_card_by_uid(action.card_uid) if action.card_uid else None
+            return f"casts {card.data.name}" if card else "casts a spell"
+        elif action.action_type == ActionType.ATTACK:
+            card = self.engine.get_card_by_uid(action.card_uid) if action.card_uid else None
+            return f"attacks with {card.data.name}" if card else "attacks"
+        elif action.action_type == ActionType.BLOCK:
+            card = self.engine.get_card_by_uid(action.card_uid) if action.card_uid else None
+            return f"blocks with {card.data.name}" if card else "blocks"
+        elif action.action_type == ActionType.JUDGMENT:
+            return "performs Judgment"
+        elif action.action_type == ActionType.PRODUCE_WILL:
+            return "produces will"
+        elif action.action_type == ActionType.ACTIVATE_ABILITY:
+            card = self.engine.get_card_by_uid(action.card_uid) if action.card_uid else None
+            return f"activates {card.data.name}'s ability" if card else "activates an ability"
+        return "takes an action"
 
     def _should_auto_pass(self) -> bool:
         """Check if we should auto-pass for the human player (MTGO F8 style)"""
@@ -2612,6 +3196,13 @@ class DuelScreen(QWidget):
         if self.engine:
             self.engine.resolve_full_chase()
         self._update_display()
+
+    def _on_opponent_autopass_changed(self, state: int):
+        """Handle opponent autopass checkbox toggle."""
+        self.opponent_autopass = (state == Qt.CheckState.Checked.value)
+        if self.engine and not self.engine.game_over:
+            status = "enabled" if self.opponent_autopass else "disabled"
+            self._log(f"Opponent Auto-Pass {status}", Colors.TEXT_MUTED)
 
     def _on_surrender(self):
         """Surrender the game"""

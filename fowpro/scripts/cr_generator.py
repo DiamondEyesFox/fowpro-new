@@ -204,8 +204,11 @@ class CRScriptGenerator:
         incarnation_abilities = []
         awakening_abilities = []
         x_cost_abilities = []
+        other_triggered_abilities = []  # For triggers other than enter/leave/attack
+        spell_effects = []  # Effects for spell cards
         keywords = KeywordAbility.NONE
         is_ruler = 'ruler' in card_type.lower() and 'j-ruler' not in card_type.lower()
+        is_spell = 'spell' in card_type.lower()
 
         # Categorize abilities
         for ability in abilities:
@@ -238,20 +241,28 @@ class CRScriptGenerator:
                     leave_abilities.append(ability)
                 elif tc == TriggerCondition.DECLARES_ATTACK:
                     attack_abilities.append(ability)
+                elif tc is not None:
+                    # Handle other triggers generically
+                    other_triggered_abilities.append(ability)
                 else:
-                    enter_abilities.append(ability)  # Default
+                    enter_abilities.append(ability)  # Default for unknown
 
             elif ability.ability_type == AbilityType.ACTIVATE:
                 activate_abilities.append(ability)
 
             elif ability.ability_type == AbilityType.CONTINUOUS:
-                continuous_abilities.append(ability)
+                # For spells, continuous abilities are actually spell effects
+                if is_spell and not ability.raw_text.startswith('Continuous'):
+                    spell_effects.append(ability)
+                else:
+                    continuous_abilities.append(ability)
 
         # Generate initial_effect
         has_registered = False
         all_abilities = (enter_abilities + leave_abilities + attack_abilities +
                         activate_abilities + continuous_abilities + modal_abilities +
-                        incarnation_abilities + awakening_abilities + x_cost_abilities)
+                        incarnation_abilities + awakening_abilities + x_cost_abilities +
+                        other_triggered_abilities + spell_effects)
 
         # Also need initial_effect if ruler has Judgment
         has_judgment = is_ruler and judgment_cost is not None
@@ -302,6 +313,14 @@ class CRScriptGenerator:
 
             for ability in continuous_abilities:
                 lines.extend(self._generate_continuous_ability(ability))
+                has_registered = True
+
+            for ability in other_triggered_abilities:
+                lines.extend(self._generate_triggered_ability(ability))
+                has_registered = True
+
+            for ability in spell_effects:
+                lines.extend(self._generate_spell_effect(ability))
                 has_registered = True
 
             if not has_registered:
@@ -368,6 +387,23 @@ class CRScriptGenerator:
         lines.append('')
         return lines
 
+    def _generate_triggered_ability(self, ability: ParsedAbility) -> List[str]:
+        """Generate generic triggered ability with actual trigger condition."""
+        lines = []
+        tc = ability.trigger_condition
+        tc_name = tc.name if tc else 'ENTER_FIELD'
+        lines.append(f'        # Triggered ability ({tc_name})')
+        lines.append(f'        self.register_ability(AutomaticAbility(')
+        lines.append(f'            name="{self._escape_name(ability.raw_text)}",')
+        lines.append(f'            trigger_condition=TriggerCondition.{tc_name},')
+
+        effects_code = self._generate_effects_list(ability.effects)
+        lines.append(f'            effects={effects_code},')
+        lines.append(f'            is_mandatory={ability.is_mandatory},')
+        lines.append(f'        ))')
+        lines.append('')
+        return lines
+
     def _generate_activate_ability(self, ability: ParsedAbility) -> List[str]:
         """Generate [Activate] ability registration."""
         lines = []
@@ -423,11 +459,16 @@ class CRScriptGenerator:
                 break
 
             # Group buff: "Each X you control gains +Y/+Y"
-            if params.get('to_others'):
+            if params.get('to_others') and effect.action == EffectAction.MODIFY_ATK:
+                atk_mod = params.get('atk', 0)
+                def_mod = params.get('def', 0)
+                target_type = params.get('target_type', 'Resonator')
+                lines.append(f'        # Group buff: Each {target_type} you control')
                 lines.append(f'        self.register_continuous_effect(ContinuousEffect(')
                 lines.append(f'            name="{self._escape_name(ability.raw_text, 40)}",')
                 lines.append(f'            affects_self_only=False,')
-                lines.append(f'            # Group buff - affects other cards you control')
+                lines.append(f'            modifier=StatModifier(atk={atk_mod}, def_={def_mod}),')
+                lines.append(f'            filter_func=lambda card: "{target_type}" in card.races,')
                 lines.append(f'        ))')
                 generated = True
                 break
@@ -462,10 +503,15 @@ class CRScriptGenerator:
                 generated = True
                 break
 
-            # Simple stat modification
-            if effect.action == EffectAction.MODIFY_ATK:
+            # Simple stat modification (skip if group buff - handled above)
+            if effect.action == EffectAction.MODIFY_ATK and not params.get('to_others'):
                 atk_mod = params.get('atk', 0)
                 def_mod = params.get('def', 0)
+                if params.get('swap_stats'):
+                    lines.append(f'        # Swap ATK and DEF')
+                    lines.append(f'        effects = [EffectBuilder.swap_stats()]')
+                    generated = True
+                    break
                 if atk_mod or def_mod:
                     lines.append(f'        self.register_ability(AbilityFactory.continuous_buff(')
                     lines.append(f'            atk={atk_mod},')
@@ -475,15 +521,82 @@ class CRScriptGenerator:
                     generated = True
                     break
 
+            # Search deck effect
+            if effect.action == EffectAction.SEARCH:
+                dest = params.get('destination', 'hand')
+                lines.append(f'        effects = [EffectBuilder.search(destination="{dest}")]')
+                generated = True
+                break
+
+            # Remove from game (exile) effect
+            if effect.action == EffectAction.REMOVE_FROM_GAME:
+                lines.append(f'        effects = [EffectBuilder.remove_from_game()]')
+                generated = True
+                break
+
+            # Grant keyword (protection, indestructible, etc.)
+            if effect.action == EffectAction.GRANT_KEYWORD:
+                keyword = params.get('keyword')
+                if keyword:
+                    if params.get('inherent'):
+                        # Inherent keyword - card has this ability naturally
+                        lines.append(f'        # Inherent keyword: {keyword.name if hasattr(keyword, "name") else keyword}')
+                        lines.append(f'        card.add_keyword(KeywordAbility.{keyword.name if hasattr(keyword, "name") else keyword})')
+                    else:
+                        # Granted keyword with duration
+                        lines.append(f'        effects = [EffectBuilder.grant_keyword(KeywordAbility.{keyword.name if hasattr(keyword, "name") else keyword})]')
+                    generated = True
+                    # Continue to collect all keywords, don't break
+
         if not generated:
-            # Check if there's at least some effect to indicate partial handling
-            if ability.effects:
+            # Try to generate using _effect_to_code as fallback
+            effect_strs = []
+            for effect in ability.effects:
+                effect_code = self._effect_to_code(effect)
+                if effect_code:
+                    effect_strs.append(effect_code)
+
+            if effect_strs:
+                lines.append(f'        effects = [')
+                for effect_code in effect_strs:
+                    lines.append(f'            {effect_code},')
+                lines.append(f'        ]')
+                lines.append(f'        self.register_continuous_effect_with_effects(effects)')
+                generated = True
+            elif ability.effects:
                 effect_types = [e.action.name for e in ability.effects]
                 lines.append(f'        # Continuous effect with: {", ".join(effect_types)}')
                 lines.append(f'        # {self._escape_name(ability.raw_text, 70)}')
             else:
                 lines.append(f'        # Complex continuous effect (needs manual implementation)')
                 lines.append(f'        # {self._escape_name(ability.raw_text, 70)}')
+
+        lines.append('')
+        return lines
+
+    def _generate_spell_effect(self, ability: ParsedAbility) -> List[str]:
+        """Generate spell effect (what happens when spell resolves)."""
+        lines = []
+        lines.append(f'        # Spell effect')
+
+        # Generate effects list for the spell
+        effect_strs = []
+        for effect in ability.effects:
+            effect_code = self._effect_to_code(effect)
+            if effect_code:
+                effect_strs.append(effect_code)
+
+        if effect_strs:
+            lines.append(f'        effects = [')
+            for effect_code in effect_strs:
+                lines.append(f'            {effect_code},')
+            lines.append(f'        ]')
+            lines.append(f'        self.register_spell_effect(effects)')
+        else:
+            # Fallback for unhandled spell effects
+            effect_types = [e.action.name for e in ability.effects]
+            lines.append(f'        # Effects: {", ".join(effect_types)}')
+            lines.append(f'        # {self._escape_name(ability.raw_text, 70)}')
 
         lines.append('')
         return lines
@@ -511,20 +624,35 @@ class CRScriptGenerator:
 
         if action == EffectAction.DRAW:
             count = params.get('count', 1)
+            if params.get('variable'):
+                return 'EffectBuilder.draw_variable()'
             return f'EffectBuilder.draw({count})'
 
         elif action == EffectAction.DEAL_DAMAGE:
             amount = params.get('amount', 0)
+            if params.get('x_variable'):
+                return 'EffectBuilder.deal_damage_x()'
+            if params.get('equal_to_atk'):
+                return 'EffectBuilder.deal_damage_equal_to_atk()'
+            if params.get('variable_x'):
+                return 'EffectBuilder.deal_damage_variable()'
+            if params.get('mutual'):
+                return 'EffectBuilder.deal_damage_mutual()'
             return f'EffectBuilder.deal_damage({amount})'
 
         elif action == EffectAction.DESTROY:
             return 'EffectBuilder.destroy()'
 
         elif action == EffectAction.RETURN_TO_HAND:
+            from_zone = params.get('from_zone')
+            if from_zone == 'graveyard':
+                return 'EffectBuilder.return_from_graveyard()'
             return 'EffectBuilder.return_to_hand()'
 
         elif action == EffectAction.GAIN_LIFE:
             amount = params.get('amount', 0)
+            if params.get('equal_to_damage'):
+                return 'EffectBuilder.gain_life_equal_to_damage()'
             return f'EffectBuilder.gain_life({amount})'
 
         elif action == EffectAction.LOSE_LIFE:
@@ -533,11 +661,15 @@ class CRScriptGenerator:
 
         elif action == EffectAction.PRODUCE_WILL:
             colors = params.get('colors', ['VOID'])
+            if params.get('any_color'):
+                return 'EffectBuilder.produce_will_any()'
             if len(colors) == 1:
                 return f'EffectBuilder.produce_will(Attribute.{colors[0]})'
             return f'EffectBuilder.produce_will(Attribute.{colors[0]})'
 
         elif action == EffectAction.REST:
+            if params.get('x_variable'):
+                return 'EffectBuilder.rest_x_targets()'
             return 'EffectBuilder.rest()'
 
         elif action == EffectAction.RECOVER:
@@ -550,9 +682,25 @@ class CRScriptGenerator:
             counter_type = params.get('counter_type', 'generic')
             return f'EffectBuilder.add_counter("{counter_type}")'
 
-        elif action in (EffectAction.MODIFY_ATK, EffectAction.MODIFY_DEF):
+        elif action == EffectAction.REMOVE_COUNTER:
+            counter_type = params.get('counter_type', 'generic')
+            return f'EffectBuilder.remove_counter("{counter_type}")'
+
+        elif action in (EffectAction.MODIFY_ATK, EffectAction.MODIFY_DEF, EffectAction.SET_ATK):
             atk = params.get('atk', 0)
             def_ = params.get('def', 0)
+            if params.get('swap_stats'):
+                return 'EffectBuilder.swap_stats()'
+            if params.get('scaling'):
+                atk_per = params.get('atk_per', 0)
+                def_per = params.get('def_per', 0)
+                return f'EffectBuilder.scaling_buff({atk_per}, {def_per})'
+            if params.get('dynamic'):
+                return 'EffectBuilder.dynamic_stats()'
+            if params.get('double_damage'):
+                return 'EffectBuilder.double_damage()'
+            if params.get('replacement'):
+                return 'EffectBuilder.damage_replacement()'
             duration = effect.duration
             dur_str = 'EffectDuration.UNTIL_END_OF_TURN' if duration == EffectDuration.UNTIL_END_OF_TURN else 'EffectDuration.INSTANT'
             return f'EffectBuilder.buff({atk}, {def_}, {dur_str})'
@@ -561,19 +709,182 @@ class CRScriptGenerator:
             keyword = params.get('keyword', KeywordAbility.NONE)
             if keyword != KeywordAbility.NONE:
                 return f'EffectBuilder.grant_keyword(KeywordAbility.{keyword.name})'
+            # Handle special grant types
+            if params.get('force_attack'):
+                return 'EffectBuilder.force_attack()'
+            if params.get('force_block'):
+                return 'EffectBuilder.force_block()'
+            if params.get('redirect'):
+                return 'EffectBuilder.redirect_target()'
+            if params.get('to_others'):
+                return 'EffectBuilder.grant_to_others()'
+            if params.get('end_of_turn_trigger'):
+                return 'EffectBuilder.end_of_turn_trigger()'
+            if params.get('on_targeted'):
+                return 'EffectBuilder.on_targeted_trigger()'
+            if params.get('play_restriction'):
+                return 'EffectBuilder.play_restriction()'
+            if params.get('move'):
+                return 'EffectBuilder.move_addition()'
 
         elif action == EffectAction.REMOVE_FROM_GAME:
             return 'EffectBuilder.remove_from_game()'
 
         elif action == EffectAction.PUT_INTO_FIELD:
-            # Check for X variable
+            from_zone = params.get('from_zone', 'hand')
             if params.get('x_variable'):
                 return 'EffectBuilder.put_into_field_x_cost()'
-            return 'EffectBuilder.put_into_field()'
+            if params.get('on_added_death'):
+                return 'EffectBuilder.put_on_added_death()'
+            if params.get('this_turn'):
+                return f'EffectBuilder.put_into_field(from_zone="{from_zone}", this_turn=True)'
+            return f'EffectBuilder.put_into_field(from_zone="{from_zone}")'
 
         elif action == EffectAction.SEARCH:
             dest = params.get('destination', 'hand')
+            if params.get('on_death'):
+                return f'EffectBuilder.search_on_death(destination="{dest}")'
             return f'EffectBuilder.search(destination="{dest}")'
+
+        elif action == EffectAction.BANISH:
+            if params.get('self') and params.get('conditional'):
+                return 'EffectBuilder.banish_self_conditional()'
+            if params.get('controller') == 'opponent':
+                return 'EffectBuilder.opponent_banishes()'
+            return 'EffectBuilder.banish()'
+
+        elif action == EffectAction.DISCARD:
+            if params.get('all'):
+                return 'EffectBuilder.discard_all()'
+            count = params.get('count', 1)
+            return f'EffectBuilder.discard({count})'
+
+        elif action == EffectAction.GAIN_CONTROL:
+            return 'EffectBuilder.gain_control()'
+
+        elif action == EffectAction.REMOVE_ABILITY:
+            if params.get('all'):
+                return 'EffectBuilder.remove_all_abilities()'
+            if params.get('restriction'):
+                return 'EffectBuilder.add_restriction()'
+            if params.get('prevent_recovery'):
+                return 'EffectBuilder.prevent_recovery()'
+            return 'EffectBuilder.remove_ability()'
+
+        elif action == EffectAction.REVEAL:
+            if params.get('from_top'):
+                return 'EffectBuilder.reveal_top()'
+            if params.get('secret_choice'):
+                return 'EffectBuilder.secret_choice()'
+            return 'EffectBuilder.reveal()'
+
+        elif action == EffectAction.PREVENT_DAMAGE:
+            if params.get('redirect'):
+                return 'EffectBuilder.redirect_damage()'
+            if params.get('next_only'):
+                return 'EffectBuilder.prevent_next_damage()'
+            if params.get('all'):
+                if params.get('battle_only'):
+                    return 'EffectBuilder.prevent_all_battle_damage()'
+                return 'EffectBuilder.prevent_all_damage()'
+            return 'EffectBuilder.prevent_damage()'
+
+        elif action == EffectAction.PUT_ON_TOP_OF_DECK:
+            return 'EffectBuilder.put_on_top_of_deck()'
+
+        elif action == EffectAction.SHUFFLE_INTO_DECK:
+            return 'EffectBuilder.shuffle_into_deck()'
+
+        # ====== CR 1007: REMOVE_DAMAGE ======
+        elif action == EffectAction.REMOVE_DAMAGE:
+            if params.get('all'):
+                return 'EffectBuilder.remove_all_damage()'
+            amount = params.get('amount', 0)
+            return f'EffectBuilder.remove_damage({amount})'
+
+        # ====== CR 1006: SUMMON ======
+        elif action == EffectAction.SUMMON:
+            return 'EffectBuilder.summon()'
+
+        # ====== CR 1017: COPY ======
+        elif action == EffectAction.COPY:
+            copy_type = params.get('type', 'spell')
+            if copy_type == 'entity':
+                return 'EffectBuilder.copy_entity()'
+            return 'EffectBuilder.copy_spell()'
+
+        # ====== CR 1017: BECOME_COPY ======
+        elif action == EffectAction.BECOME_COPY:
+            return 'EffectBuilder.become_copy()'
+
+        # ====== CR 1014: LOOK ======
+        elif action == EffectAction.LOOK:
+            count = params.get('count', 1)
+            if params.get('foresee'):
+                return f'EffectBuilder.foresee({count})'
+            return f'EffectBuilder.look({count})'
+
+        # ====== PUT_ON_BOTTOM_OF_DECK ======
+        elif action == EffectAction.PUT_ON_BOTTOM_OF_DECK:
+            return 'EffectBuilder.put_on_bottom_of_deck()'
+
+        # ====== PUT_INTO_GRAVEYARD ======
+        elif action == EffectAction.PUT_INTO_GRAVEYARD:
+            return 'EffectBuilder.put_into_graveyard()'
+
+        # ====== SET_LIFE ======
+        elif action == EffectAction.SET_LIFE:
+            amount = params.get('amount', 0)
+            return f'EffectBuilder.set_life({amount})'
+
+        # ====== SET_ATK / SET_DEF ======
+        elif action == EffectAction.SET_ATK:
+            if 'def' in params:
+                atk = params.get('atk', 0)
+                def_ = params.get('def', 0)
+                return f'EffectBuilder.set_stats({atk}, {def_})'
+            value = params.get('value', 0)
+            return f'EffectBuilder.set_atk({value})'
+
+        elif action == EffectAction.SET_DEF:
+            value = params.get('value', 0)
+            return f'EffectBuilder.set_def({value})'
+
+        # ====== GRANT_RACE ======
+        elif action == EffectAction.GRANT_RACE:
+            race = params.get('race', 'Unknown')
+            if params.get('replace'):
+                return f'EffectBuilder.set_race("{race}")'
+            return f'EffectBuilder.grant_race("{race}")'
+
+        # ====== GRANT_ATTRIBUTE / SET_ATTRIBUTE ======
+        elif action == EffectAction.GRANT_ATTRIBUTE:
+            attr = params.get('attribute', 'VOID')
+            return f'EffectBuilder.grant_attribute(Attribute.{attr})'
+
+        elif action == EffectAction.SET_ATTRIBUTE:
+            attr = params.get('attribute', 'VOID')
+            return f'EffectBuilder.set_attribute(Attribute.{attr})'
+
+        # ====== REMOVE_KEYWORD ======
+        elif action == EffectAction.REMOVE_KEYWORD:
+            keyword = params.get('keyword', KeywordAbility.NONE)
+            if keyword != KeywordAbility.NONE:
+                return f'EffectBuilder.remove_keyword(KeywordAbility.{keyword.name})'
+            return None
+
+        # ====== GRANT_ABILITY (complex) ======
+        elif action == EffectAction.GRANT_ABILITY:
+            if params.get('call_stone'):
+                return 'EffectBuilder.call_magic_stone()'
+            if params.get('force_attack'):
+                return 'EffectBuilder.force_attack()'
+            if params.get('force_block'):
+                return 'EffectBuilder.force_block()'
+            if params.get('redirect'):
+                return 'EffectBuilder.redirect_target()'
+            # Generic grant ability
+            return 'EffectBuilder.grant_ability()'
 
         return None
 

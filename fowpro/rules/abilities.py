@@ -136,8 +136,8 @@ class ActivateAbility(Ability):
         if self.tap_cost:
             if card.is_rested:
                 return False
-            # CR 905.3: Need swiftness if card just entered
-            if self.needs_swiftness_for_tap and not card.can_use_tap_abilities:
+            # CR 905.3: Need swiftness if card just entered this turn
+            if self.needs_swiftness_for_tap and card.entered_turn == game.turn_number:
                 if not card.has_keyword(KeywordAbility.SWIFTNESS):
                     return False
 
