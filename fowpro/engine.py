@@ -305,6 +305,37 @@ class GameEngine:
         registry = _get_script_registry()
         return registry.get(card.data.code)
 
+    def get_will_pool(self, player: int) -> dict:
+        """
+        Get the will pool for a player as a dict.
+
+        CR 407: Will pool for cost payment.
+        Used by CostManager for cost calculation.
+        """
+        pool = self.players[player].will_pool
+        return {
+            'light': pool.light,
+            'fire': pool.fire,
+            'water': pool.water,
+            'wind': pool.wind,
+            'darkness': pool.darkness,
+            'void': pool.void,
+        }
+
+    def spend_will(self, player: int, will_type: str, amount: int) -> bool:
+        """
+        Spend will from a player's pool.
+
+        CR 407: Will expenditure.
+        Used by CostManager for cost payment.
+        """
+        pool = self.players[player].will_pool
+        current = getattr(pool, will_type, 0)
+        if current < amount:
+            return False
+        setattr(pool, will_type, current - amount)
+        return True
+
     def get_will_colors(self, card: Card) -> list:
         """Get the will colors a stone can produce"""
         script = self.get_script(card)
@@ -382,6 +413,8 @@ class GameEngine:
             if self._rules_engine:
                 self._rules_engine.triggers.unregister_triggers(card)
                 self._rules_engine.layers.unregister_effects_from_source(card.uid)
+                self._rules_engine.costs.unregister_from_source(card.uid)  # CR 402
+                self._rules_engine.replacement.unregister_effects_from_source(card.uid)  # CR 910
             # Call script's on_leave_field hook
             script = self.get_script(card)
             script.on_leave_field(self, card)
@@ -600,6 +633,32 @@ class GameEngine:
                         affects_self_only=True,
                     )
                     self._rules_engine.layers.register_effect(layered)
+
+        # Register cost modifiers (CR 402.2)
+        if hasattr(script, 'get_cost_modifiers'):
+            try:
+                from .rules.costs import CostReduction, CostIncrease
+                modifiers = script.get_cost_modifiers(self, card)
+                for mod in modifiers:
+                    if isinstance(mod, CostReduction):
+                        mod.source_id = card.uid
+                        self._rules_engine.costs.register_reduction(mod)
+                    elif isinstance(mod, CostIncrease):
+                        mod.source_id = card.uid
+                        self._rules_engine.costs.register_increase(mod)
+            except Exception as e:
+                print(f"[DEBUG] Error registering cost modifiers: {e}")
+
+        # Register replacement effects (CR 910)
+        if hasattr(script, 'get_replacement_effects'):
+            try:
+                from .rules.replacement import ReplacementEffect
+                effects = script.get_replacement_effects(self, card)
+                for effect in effects:
+                    effect.source_id = card.uid
+                    self._rules_engine.replacement.register_effect(effect)
+            except Exception as e:
+                print(f"[DEBUG] Error registering replacement effects: {e}")
 
     def change_phase(self, new_phase: Phase):
         """Change to a new phase"""
@@ -1107,51 +1166,95 @@ class GameEngine:
         # Get script for alternative costs
         script = self.get_script(card)
 
-        # Handle Incarnation (CR 1105) - alternative cost via banishing
-        if use_incarnation and script:
-            incarnation_cost = getattr(script, 'incarnation_cost', None)
-            if not incarnation_cost:
-                # Check registered alternative costs
-                alt_costs = getattr(script, '_alternative_costs', [])
-                for cost in alt_costs:
-                    if hasattr(cost, 'banish_count'):  # IncarnationCost
-                        incarnation_cost = cost
+        # Use CR-compliant CostManager when available (CR 402)
+        if self._rules_engine:
+            # Build alternative cost if using incarnation
+            alternative = None
+            if use_incarnation:
+                alts = self._rules_engine.costs.get_available_alternatives(card, player)
+                for alt in alts:
+                    if 'Incarnation' in alt.name:
+                        alternative = alt
                         break
+                if not alternative:
+                    return False  # No incarnation available
 
-            if incarnation_cost:
-                if not incarnation_cost.can_pay(self, player):
-                    return False
-                if not incarnation_cards or len(incarnation_cards) < incarnation_cost.banish_count:
-                    return False
-                # Pay incarnation cost (banish resonators)
-                incarnation_cost.pay(self, player, incarnation_cards)
-                # Mark card as played via incarnation
-                card.played_via_incarnation = True
-            else:
-                return False  # No incarnation cost available
-        else:
-            # Normal cost payment
-            # Check for Grimm's ability: Fairy Tale resonators can be paid with any will
-            any_will = self._grimm_fairy_tale_check(player, card)
-
-            # Check base cost
-            if not p.will_pool.can_pay(card.data.cost, any_will_pays_colored=any_will):
+            # Check if cost can be paid (includes reductions/increases per CR 402.2)
+            if not self._rules_engine.costs.can_pay_cost(
+                card, player, alternative, awakening=use_awakening
+            ):
                 return False
 
-            # Pay base cost
-            p.will_pool.pay(card.data.cost, any_will_pays_colored=any_will)
+            # Generate and execute payment plan
+            plan = self._rules_engine.costs.generate_payment_plan(
+                card, player, alternative, use_awakening, x_value
+            )
+            if not plan:
+                return False
+
+            # For incarnation, add the cards to banish to the plan
+            if use_incarnation and incarnation_cards:
+                plan.cards_to_banish.extend(incarnation_cards)
+
+            # Execute payment
+            if not self._rules_engine.costs.pay_cost(card, player, plan):
+                return False
+
+            # Mark card state
+            if use_incarnation:
+                card.played_via_incarnation = True
+            if use_awakening:
+                card.is_awakened = True
+
             self.emit(EventType.WILL_SPENT, player, card, cost=str(card.data.cost))
 
-        # Handle Awakening (CR 1102) - extra cost for enhanced effect
-        if use_awakening and script:
-            awakening_cost = getattr(script, 'awakening_cost', None)
-            if awakening_cost:
-                if not awakening_cost.can_pay(self, player, x_value):
+        else:
+            # Legacy cost handling (fallback when no RulesEngine)
+            # Handle Incarnation (CR 1105) - alternative cost via banishing
+            if use_incarnation and script:
+                incarnation_cost = getattr(script, 'incarnation_cost', None)
+                if not incarnation_cost:
+                    # Check registered alternative costs
+                    alt_costs = getattr(script, '_alternative_costs', [])
+                    for cost in alt_costs:
+                        if hasattr(cost, 'banish_count'):  # IncarnationCost
+                            incarnation_cost = cost
+                            break
+
+                if incarnation_cost:
+                    if not incarnation_cost.can_pay(self, player):
+                        return False
+                    if not incarnation_cards or len(incarnation_cards) < incarnation_cost.banish_count:
+                        return False
+                    # Pay incarnation cost (banish resonators)
+                    incarnation_cost.pay(self, player, incarnation_cards)
+                    # Mark card as played via incarnation
+                    card.played_via_incarnation = True
+                else:
+                    return False  # No incarnation cost available
+            else:
+                # Normal cost payment
+                # Check for Grimm's ability: Fairy Tale resonators can be paid with any will
+                any_will = self._grimm_fairy_tale_check(player, card)
+
+                # Check base cost
+                if not p.will_pool.can_pay(card.data.cost, any_will_pays_colored=any_will):
                     return False
-                awakening_cost.pay(self, player, x_value)
-                # Mark card as awakened
-                card.is_awakened = True
-                self.emit(EventType.WILL_SPENT, player, card, cost="awakening")
+
+                # Pay base cost
+                p.will_pool.pay(card.data.cost, any_will_pays_colored=any_will)
+                self.emit(EventType.WILL_SPENT, player, card, cost=str(card.data.cost))
+
+            # Handle Awakening (CR 1102) - extra cost for enhanced effect
+            if use_awakening and script:
+                awakening_cost = getattr(script, 'awakening_cost', None)
+                if awakening_cost:
+                    if not awakening_cost.can_pay(self, player, x_value):
+                        return False
+                    awakening_cost.pay(self, player, x_value)
+                    # Mark card as awakened
+                    card.is_awakened = True
+                    self.emit(EventType.WILL_SPENT, player, card, cost="awakening")
 
         # Store X value on card for effect resolution
         if x_value > 0:
@@ -1173,8 +1276,29 @@ class GameEngine:
         Get available alternative costs for a card.
 
         Returns dict with 'awakening' and 'incarnation' keys if available.
+        CR 402.4: Alternative costs replace base cost.
         """
         result = {'awakening': None, 'incarnation': None}
+
+        # Use CostManager when available (CR 402)
+        if self._rules_engine:
+            # Get alternatives from CostManager
+            alts = self._rules_engine.costs.get_available_alternatives(card, player)
+            for alt in alts:
+                if 'Incarnation' in alt.name:
+                    result['incarnation'] = alt
+                elif alt.name == 'Remnant':
+                    # Remnant is a special alternative (play from graveyard)
+                    pass
+
+            # Check awakening from CostManager
+            awk = self._rules_engine.costs.get_awakening_cost(card)
+            if awk:
+                result['awakening'] = awk
+
+            return result
+
+        # Legacy fallback
         script = self.get_script(card)
 
         if not script:

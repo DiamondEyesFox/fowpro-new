@@ -5,6 +5,29 @@ All notable changes to FoWPro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-01-04
+
+### Added
+- **CostManager Integration (CR 402)**: Engine now uses CR-compliant cost system
+  - Cost reductions/increases applied properly (CR 402.2)
+  - Alternative costs (Incarnation, Remnant) handled by CostManager
+  - Awakening costs integrated
+  - Scripts can register cost modifiers via `get_cost_modifiers()`
+
+- **Replacement Effects Integration (CR 910)**: Full replacement effect system enabled
+  - Scripts can register replacement effects via `get_replacement_effects()`
+  - Destruction, damage, and zone changes check for replacements
+  - Proper handling of "If X would Y, Z instead" effects
+
+### Changed
+- `play_card()` now uses CostManager for cost calculation and payment
+- `get_available_alternative_costs()` delegates to CostManager when available
+- Added `get_will_pool()` and `spend_will()` methods to engine
+
+### Technical
+- `_register_card_continuous_effects()` now also registers cost modifiers and replacement effects
+- Card leave-field cleanup now unregisters costs and replacement effects
+
 ## [0.2.0] - 2026-01-04
 
 ### Added
