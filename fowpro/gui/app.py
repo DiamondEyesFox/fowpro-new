@@ -315,17 +315,21 @@ class FoWProApp(QMainWindow):
     # =========================================================================
 
     def _on_start_game(self):
-        """Handle start game request"""
+        """Handle start game request - shows lobby first"""
         # Ensure database is loaded
         if self.db is None:
             self.load_database()
 
-        # Show duel screen
-        self.show_screen(Screen.DUEL)
-
-        # Get duel screen and start game
+        # Get duel screen and show lobby
         duel_screen = self._get_screen(Screen.DUEL)
-        if hasattr(duel_screen, 'start_new_game'):
+        if hasattr(duel_screen, 'show_lobby_and_start'):
+            # Show lobby dialog - if user confirms, game starts
+            if duel_screen.show_lobby_and_start():
+                # Only switch to duel screen if game started successfully
+                self.show_screen(Screen.DUEL)
+        elif hasattr(duel_screen, 'start_new_game'):
+            # Fallback for old behavior
+            self.show_screen(Screen.DUEL)
             duel_screen.start_new_game()
 
     # =========================================================================

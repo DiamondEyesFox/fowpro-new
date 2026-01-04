@@ -1,0 +1,25 @@
+{
+  "name": "Fairy Tale Wind",
+  "ruler": "CMF-061",
+  "main": [
+    "TAT-039", "TAT-039", "TAT-039", "TAT-039",
+    "CMF-067", "CMF-067", "CMF-067", "CMF-067",
+    "CMF-069", "CMF-069", "CMF-069", "CMF-069",
+    "CMF-019", "CMF-019", "CMF-019", "CMF-019",
+    "TAT-062", "TAT-062", "TAT-062", "TAT-062",
+    "CMF-043", "CMF-043", "CMF-043", "CMF-043",
+    "CMF-014",
+    "CMF-017", "CMF-017", "CMF-017", "CMF-017",
+    "TAT-072", "TAT-072", "TAT-072", "TAT-072",
+    "CMF-058", "CMF-058", "CMF-058", "CMF-058",
+    "CMF-071", "CMF-071",
+    "CMF-051"
+  ],
+  "stones": [
+    "TAT-096", "TAT-096", "TAT-096", "TAT-096",
+    "CMF-097", "CMF-097", "CMF-097", "CMF-097",
+    "TAT-092",
+    "CMF-105"
+  ],
+  "side": []
+}

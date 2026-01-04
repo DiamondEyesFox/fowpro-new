@@ -243,7 +243,7 @@ class KeywordManager:
         )
 
         # ==== SWIFTNESS (CR 1108) ====
-        # Handled by checking can_use_tap_abilities flag
+        # Handled in ActivateAbility.can_play() - checks entered_turn == turn_number
         self.handlers[Keyword.SWIFTNESS] = KeywordHandler(
             keyword=Keyword.SWIFTNESS,
         )

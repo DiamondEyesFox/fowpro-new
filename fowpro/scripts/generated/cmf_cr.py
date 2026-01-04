@@ -44,7 +44,7 @@ class BlindedPrince(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{0} : Thi card loses all abilities un",
-            effects=[],
+            effects=[EffectBuilder.add_restriction(), EffectBuilder.remove_all_abilities()],
         ))
 
 
@@ -116,7 +116,7 @@ class GrimmTheFairyTalePrince(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{1} , discard a Fairy Tale resonator:",
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
             once_per_turn=True,
         ))
 
@@ -197,7 +197,7 @@ class KingsServant(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Put target Addition:Resonator from your ",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand()],
+            effects=[EffectBuilder.return_from_graveyard()],
             is_mandatory=True,
         ))
 
@@ -238,7 +238,7 @@ class LightOfHope(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Your life is 2000 or lower: Put target a",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
+            effects=[EffectBuilder.put_on_top_of_deck()],
             is_mandatory=True,
         ))
 
@@ -556,19 +556,19 @@ class GillesDeRaisTheGoldenDragon(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
-        self.register_ability(AutomaticAbility(
-            name="When this card is destroyed, you may ban",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
-            is_mandatory=False,
-        ))
-
         # [Continuous] ability
         self.register_ability(AbilityFactory.continuous_buff(
             atk=200,
             def_=0,
             name="This card gains [+200/+0] for ",
+        ))
+
+        # Triggered ability (DESTROYED)
+        self.register_ability(AutomaticAbility(
+            name="When this card is destroyed, you may ban",
+            trigger_condition=TriggerCondition.DESTROYED,
+            effects=[],
+            is_mandatory=False,
         ))
 
 
@@ -627,7 +627,7 @@ class LittleRedRidingHood(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{0} : You cannot play this ability if",
-            effects=[],
+            effects=[EffectBuilder.add_restriction()],
         ))
 
 
@@ -707,7 +707,7 @@ class MurderousSnowman(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Banish one magic stone you control",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
+            effects=[EffectBuilder.banish()],
             is_mandatory=True,
         ))
 
@@ -768,10 +768,10 @@ class RedHotIronShoes(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (RESTED)
         self.register_ability(AutomaticAbility(
             name="Whenever resonator with this becomes res",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.RESTED,
             effects=[EffectBuilder.deal_damage(500), EffectBuilder.deal_damage(500)],
             is_mandatory=True,
         ))
@@ -792,7 +792,7 @@ class RobeOfFirerat(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{Rest} : Prevent all damage from target ",
             tap_cost=True,
-            effects=[],
+            effects=[EffectBuilder.prevent_all_damage()],
         ))
 
 
@@ -890,10 +890,10 @@ class WolfhauntedInBlackForest(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (DESTROYED)
         self.register_ability(AutomaticAbility(
             name="When this card is destroyed, if you don\'",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.DESTROYED,
             effects=[EffectBuilder.deal_damage(500), EffectBuilder.deal_damage(500)],
             is_mandatory=True,
         ))
@@ -1084,7 +1084,7 @@ class KnightOfTheNewMoon(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{Rest} : Draw a card, then discard a car",
             tap_cost=True,
-            effects=[EffectBuilder.draw(1)],
+            effects=[EffectBuilder.draw(1), EffectBuilder.discard(1)],
         ))
 
 
@@ -1139,7 +1139,7 @@ class JeanneDarcTheFlameOfHatred(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{Rest} : Prevent all damage from target ",
             tap_cost=True,
-            effects=[],
+            effects=[EffectBuilder.prevent_all_damage()],
         ))
 
         # [Activate] ability
@@ -1161,10 +1161,10 @@ class OneinchBoy(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (DEALS_DAMAGE)
         self.register_ability(AutomaticAbility(
             name="Whenever this card deals damage to a res",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.DEALS_DAMAGE,
             effects=[EffectBuilder.destroy()],
             is_mandatory=True,
         ))
@@ -1274,7 +1274,7 @@ class SeerOfTheBlueMoon(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{0} : You cannot play this ability if",
-            effects=[],
+            effects=[EffectBuilder.add_restriction()],
         ))
 
         # [Continuous] ability
@@ -1304,7 +1304,7 @@ class KaguyaPrincessOfTheMoon(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="Pay{U} {U} {1} : Search your main deck f",
             will_cost=WillCost(water=2, generic=1),
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
         ))
 
 
@@ -1405,7 +1405,7 @@ class VoiceOfTheFalseGod(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        # Continuous effect with: BANISH
+        # Continuous effect with: DRAW, BANISH
         # Banish a resonator you control. If you do, draw two cards. If you bani
 
 
@@ -1460,7 +1460,7 @@ class AthosTheThreeMusketeers(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for an Addition:Re",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
             is_mandatory=False,
         ))
 
@@ -1495,7 +1495,7 @@ class ChristieTheWindTracker(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{Rest} : Draw a card. You cannot play th",
             tap_cost=True,
-            effects=[EffectBuilder.draw(1)],
+            effects=[EffectBuilder.draw(1), EffectBuilder.add_restriction()],
         ))
 
 
@@ -1510,11 +1510,11 @@ class HelsingTheVampireHunter(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (TURN_END)
         self.register_ability(AutomaticAbility(
             name="Target non-Human J/resonator loses all a",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.destroy()],
+            trigger_condition=TriggerCondition.TURN_END,
+            effects=[EffectBuilder.destroy(), EffectBuilder.remove_all_abilities()],
             is_mandatory=True,
         ))
 
@@ -1686,7 +1686,7 @@ class Gretel(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Reveal the top card of your magic stone ",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
+            effects=[EffectBuilder.reveal_top(), EffectBuilder.put_into_field(from_zone="hand")],
             is_mandatory=True,
         ))
 
@@ -1703,10 +1703,10 @@ class Hansel(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
+        # Triggered ability (DEALS_DAMAGE)
         self.register_ability(AutomaticAbility(
             name="Whenever this card deals damage to an op",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
+            trigger_condition=TriggerCondition.DEALS_DAMAGE,
             effects=[EffectBuilder.draw(1)],
             is_mandatory=True,
         ))
@@ -1878,7 +1878,7 @@ class AlucardTheDarkNoble(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{0} : You cannot play this ability if",
-            effects=[],
+            effects=[EffectBuilder.add_restriction()],
         ))
 
         # [Activate] ability
@@ -1900,6 +1900,17 @@ class DraculaTheDemonicOne(RulesCardScript):
     Continuous : Whenever a resonator your opponent controls is put into a graveyard, if it was dealt damage by this card this turn, put it into your field under your control. It gains Nightmare and Vampire in addition to its own race.
     """
 
+    def initial_effect(self, game, card):
+        """Register abilities when card is created."""
+        # Triggered ability (PUT_INTO_GRAVEYARD)
+        self.register_ability(AutomaticAbility(
+            name="Whenever a resonator your opponent contr",
+            trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
+            effects=[],
+            is_mandatory=True,
+        ))
+
+
     def get_keywords(self) -> KeywordAbility:
         return KeywordAbility.FLYING | KeywordAbility.IMPERISHABLE | KeywordAbility.UNBLOCKABLE
 
@@ -1919,7 +1930,7 @@ class AlvarezTheDemonCastle(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="Pay{B} , banish this card: Put target Va",
             will_cost=WillCost(darkness=1),
-            effects=[EffectBuilder.return_to_hand()],
+            effects=[EffectBuilder.return_from_graveyard()],
         ))
 
         # [Continuous] ability
@@ -2001,18 +2012,18 @@ class CinderellaTheAshenMaiden(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
-        self.register_ability(AutomaticAbility(
-            name="Whenever this card deals damage to your ",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
-            is_mandatory=False,
-        ))
-
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Banish a resonator: this card deals 200 ",
             effects=[EffectBuilder.deal_damage(200), EffectBuilder.deal_damage(200)],
+        ))
+
+        # Triggered ability (DEALS_DAMAGE)
+        self.register_ability(AutomaticAbility(
+            name="Whenever this card deals damage to your ",
+            trigger_condition=TriggerCondition.DEALS_DAMAGE,
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            is_mandatory=False,
         ))
 
 
@@ -2031,7 +2042,7 @@ class DeadmanPrince(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Put target resonator from your graveyard",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand()],
+            effects=[EffectBuilder.return_from_graveyard()],
             is_mandatory=True,
         ))
 
@@ -2052,7 +2063,7 @@ class JewelsOnDragonsNeck(RulesCardScript):
             name="Pay{B} ,{Rest} : Put target dark additio",
             tap_cost=True,
             will_cost=WillCost(darkness=1),
-            effects=[EffectBuilder.return_to_hand()],
+            effects=[EffectBuilder.return_from_graveyard()],
         ))
 
 
@@ -2071,7 +2082,7 @@ class LoraTheBloodSpeaker(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for a Vampire reso",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_to_hand(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
             is_mandatory=True,
         ))
 
@@ -2091,7 +2102,7 @@ class MidnightBell(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Total number of all resonators and all m",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
+            effects=[EffectBuilder.remove_all_abilities()],
             is_mandatory=True,
         ))
 
@@ -2137,7 +2148,7 @@ class PandoraOfDark(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Your opponent discards all cards from hi",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
+            effects=[EffectBuilder.discard_all()],
             is_mandatory=True,
         ))
 
@@ -2265,19 +2276,19 @@ class VampireBat(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability
-        self.register_ability(AutomaticAbility(
-            name="Whenever this card deals damage, you gai",
-            trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[],
-            is_mandatory=True,
-        ))
-
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{B} : This card gains [+200/+0] until",
             will_cost=WillCost(darkness=1),
             effects=[EffectBuilder.buff(200, 0, EffectDuration.UNTIL_END_OF_TURN)],
+        ))
+
+        # Triggered ability (DEALS_DAMAGE)
+        self.register_ability(AutomaticAbility(
+            name="Whenever this card deals damage, you gai",
+            trigger_condition=TriggerCondition.DEALS_DAMAGE,
+            effects=[],
+            is_mandatory=True,
         ))
 
 

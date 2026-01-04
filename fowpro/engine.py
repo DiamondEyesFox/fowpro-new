@@ -166,8 +166,9 @@ class GameEngine:
         self.trigger_manager = TriggerManager(self)
         self.continuous_manager = ContinuousEffectManager(self)
 
-        # Rules engine (CR-compliant wrapper) - lazily initialized
+        # Rules engine (CR-compliant wrapper) - initialize eagerly to set up event hooks
         self._rules_engine = None
+        self._get_rules_engine()  # Initialize now so hooks are registered
 
         # EventType -> TriggerEvent mapping
         self._event_trigger_map = self._build_event_trigger_map()
@@ -209,7 +210,12 @@ class GameEngine:
 
     def emit(self, event_type: EventType, player: int = -1, card: Card = None,
              target: Any = None, **data):
-        """Emit a game event"""
+        """Emit a game event.
+
+        Note: Trigger checking is handled by RulesEngine via wrapped emit().
+        The RulesEngine hooks this method in _setup_event_hooks() and calls
+        APNAPTriggerManager.check_triggers() after the event is processed.
+        """
         print(f"[DEBUG] emit: {event_type.name}", flush=True)
         event = GameEvent(event_type, player, card, target, data)
         self._event_queue.append(event)
@@ -225,8 +231,8 @@ class GameEngine:
                 raise
             print(f"[DEBUG] emit: handler {i} done", flush=True)
 
-        # Check for triggered abilities
-        self._check_triggers(event)
+        # Note: Trigger checking moved to RulesEngine (CR 906 APNAP ordering)
+        # Legacy _check_triggers() removed - triggers now handled by APNAPTriggerManager
 
     def subscribe(self, handler: Callable[[GameEvent], None]):
         """Subscribe to game events"""
@@ -262,8 +268,13 @@ class GameEngine:
         """Process all pending triggered abilities.
 
         Called after events settle to add triggered abilities to the chase.
+        Uses RulesEngine's APNAPTriggerManager for CR 906 compliant ordering.
         """
-        self.trigger_manager.process_pending_triggers()
+        if self._rules_engine:
+            self._rules_engine.add_triggers_to_chase()
+        else:
+            # Fallback to legacy (shouldn't happen if RulesEngine initialized)
+            self.trigger_manager.process_pending_triggers()
 
     # =========================================================================
     # CARD MANAGEMENT
@@ -338,33 +349,39 @@ class GameEngine:
 
         # Emit zone-specific events and call script hooks
         if to_zone == Zone.FIELD and from_zone != Zone.FIELD:
-            print(f"[DEBUG] move_card: emitting ENTERS_FIELD for {card.data.name}", flush=True)
-            self.emit(EventType.ENTERS_FIELD, card.controller, card)
-            # Call script's on_enter_field hook and register effects
-            print(f"[DEBUG] move_card: calling on_enter_field for {card.data.name} (code={card.data.code})", flush=True)
+            print(f"[DEBUG] move_card: setting up card for {card.data.name} (code={card.data.code})", flush=True)
             script = self.get_script(card)
             print(f"[DEBUG] move_card: got script {script.__class__.__name__} for {card.data.code}", flush=True)
             try:
-                # Initialize the script for this card (registers effects)
+                # Initialize the script BEFORE emitting event (so triggers are registered)
                 script.initial_effect(self, card)
-                # Register card's triggers with the TriggerManager
+                # Register card's triggers with the TriggerManager BEFORE emit
                 self._register_card_triggers(card, script)
                 # Register card's continuous effects
                 self._register_card_continuous_effects(card, script)
-                # Call the hook
-                script.on_enter_field(self, card)
             except Exception as e:
-                print(f"[DEBUG] move_card: on_enter_field CRASHED: {e}", flush=True)
+                print(f"[DEBUG] move_card: script setup CRASHED: {e}", flush=True)
                 import traceback
                 traceback.print_exc()
                 raise
+
+            # NOW emit the event (triggers are registered and will fire)
+            print(f"[DEBUG] move_card: emitting ENTERS_FIELD for {card.data.name}", flush=True)
+            self.emit(EventType.ENTERS_FIELD, card.controller, card)
+
+            # Call script's on_enter_field hook (legacy, for manual handling)
+            try:
+                script.on_enter_field(self, card)
+            except Exception as e:
+                print(f"[DEBUG] move_card: on_enter_field hook error: {e}", flush=True)
             print(f"[DEBUG] move_card: on_enter_field done for {card.data.name}", flush=True)
 
         if from_zone == Zone.FIELD and to_zone != Zone.FIELD:
             self.emit(EventType.LEAVES_FIELD, from_player, card)
-            # Unregister card's effects
-            self.trigger_manager.unregister_card(card)
-            self.continuous_manager.unregister_source(card.uid)
+            # Unregister card's effects from RulesEngine
+            if self._rules_engine:
+                self._rules_engine.triggers.unregister_triggers(card)
+                self._rules_engine.layers.unregister_effects_from_source(card.uid)
             # Call script's on_leave_field hook
             script = self.get_script(card)
             script.on_leave_field(self, card)
@@ -444,7 +461,10 @@ class GameEngine:
         p.has_drawn_for_turn = False
 
         # Reset once-per-turn triggers at turn start
-        self.trigger_manager.reset_turn_triggers()
+        if self._rules_engine:
+            self._rules_engine.triggers.reset_turn()
+        else:
+            self.trigger_manager.reset_turn_triggers()
 
         # Call on_turn_start on all card scripts for this player's cards
         self._call_turn_start_hooks(self.turn_player)
@@ -477,80 +497,109 @@ class GameEngine:
                     print(f"[DEBUG] on_turn_end hook error for {card.data.name}: {e}")
 
     def _register_card_triggers(self, card: Card, script):
-        """Register a card's triggered abilities with the TriggerManager"""
+        """Register a card's triggered abilities with RulesEngine's APNAPTriggerManager.
+
+        CR 906: Automatic abilities use APNAP ordering when multiple trigger simultaneously.
+        """
+        if not self._rules_engine:
+            return
+
+        from .rules.types import TriggerCondition, TriggerTiming
+        from .rules.triggers import TriggeredAbility, TriggerType
+
+        # Check for RulesCardScript-style AutomaticAbility first (preferred)
+        if hasattr(script, '_abilities'):
+            from .rules.abilities import AutomaticAbility
+            for ability in script._abilities:
+                if isinstance(ability, AutomaticAbility):
+                    # Create trigger that calls the ability's resolve method
+                    def make_operation(ab):
+                        def operation(game, source, event_data):
+                            ab.resolve(game, source, source.controller)
+                        return operation
+
+                    trigger = TriggeredAbility(
+                        name=ability.name or "Triggered Ability",
+                        trigger_condition=ability.trigger_condition,
+                        trigger_type=TriggerType.STANDARD,
+                        operation=make_operation(ability),
+                        is_mandatory=ability.is_mandatory,
+                        once_per_turn=ability.once_per_turn,
+                        timing=ability.trigger_timing,
+                    )
+                    self._rules_engine.triggers.register_trigger(card, trigger)
+
+        # Also check for legacy-style effects (backward compatibility)
         from .scripts import EffectType
-        from .scripts.triggers import TriggeredAbility, TriggerEvent, TriggerTiming
+        effect_type_to_trigger = {
+            EffectType.TRIGGER_ENTER: TriggerCondition.ENTER_FIELD,
+            EffectType.TRIGGER_LEAVE: TriggerCondition.LEAVE_FIELD,
+            EffectType.TRIGGER_ATTACK: TriggerCondition.DECLARES_ATTACK,
+            EffectType.TRIGGER_BLOCK: TriggerCondition.DECLARES_BLOCK,
+            EffectType.TRIGGER_DAMAGE: TriggerCondition.DEALS_DAMAGE,
+            EffectType.TRIGGER_RECOVER: TriggerCondition.RECOVERED,
+            EffectType.TRIGGER_REST: TriggerCondition.RESTED,
+        }
 
         for effect in script.get_effects():
-            # Map EffectType to TriggerEvent
-            trigger_event = None
-            if effect.effect_type == EffectType.TRIGGER_ENTER:
-                trigger_event = TriggerEvent.ENTER_FIELD
-            elif effect.effect_type == EffectType.TRIGGER_LEAVE:
-                trigger_event = TriggerEvent.LEAVE_FIELD
-            elif effect.effect_type == EffectType.TRIGGER_ATTACK:
-                trigger_event = TriggerEvent.ATTACK_DECLARED
-            elif effect.effect_type == EffectType.TRIGGER_BLOCK:
-                trigger_event = TriggerEvent.BLOCKER_DECLARED
-            elif effect.effect_type == EffectType.TRIGGER_DAMAGE:
-                trigger_event = TriggerEvent.DAMAGE_DEALT
-            elif effect.effect_type == EffectType.TRIGGER_RECOVER:
-                trigger_event = TriggerEvent.RECOVERED
-            elif effect.effect_type == EffectType.TRIGGER_REST:
-                trigger_event = TriggerEvent.RESTED
-
-            if trigger_event and effect.operation:
+            trigger_cond = effect_type_to_trigger.get(effect.effect_type)
+            if trigger_cond and effect.operation:
                 trigger = TriggeredAbility(
                     name=effect.name or "Triggered Ability",
-                    event=trigger_event,
-                    timing=TriggerTiming.CHASE if effect.uses_chase else TriggerTiming.IMMEDIATE,
+                    trigger_condition=trigger_cond,
+                    trigger_type=TriggerType.STANDARD,
                     operation=effect.operation,
                     is_mandatory=effect.is_mandatory,
                     once_per_turn=effect.once_per_turn,
+                    timing=TriggerTiming.CHASE if effect.uses_chase else TriggerTiming.IMMEDIATE,
                 )
-                self.trigger_manager.register_trigger(card, trigger)
+                self._rules_engine.triggers.register_trigger(card, trigger)
 
     def _register_card_continuous_effects(self, card: Card, script):
-        """Register a card's continuous effects with the ContinuousEffectManager"""
-        from .scripts import EffectType
-        from .scripts.continuous import ContinuousEffect as OldContinuousEffect, EffectLayer, EffectDuration, AffectedCardFilter
+        """Register a card's continuous effects with RulesEngine's LayerManager.
 
-        # Check for new RulesCardScript-style continuous effects first
+        CR 909: Continuous effects are applied in layer order.
+        """
+        if not self._rules_engine:
+            return
+
+        from .rules.layers import LayeredEffect, Layer
+        from .rules.types import EffectDuration
+
+        # Check for RulesCardScript-style continuous effects (preferred)
         if hasattr(script, 'get_continuous_effects'):
             try:
                 cr_effects = script.get_continuous_effects(self, card)
                 for cr_effect in cr_effects:
-                    # Convert CR ContinuousEffect to engine's format
-                    cont_effect = OldContinuousEffect(
+                    # Convert to LayeredEffect for the layer system
+                    layered = LayeredEffect(
                         source_id=card.uid,
                         name=cr_effect.name,
-                        layer=EffectLayer.STAT_MODIFY,  # Map layer
+                        layer=Layer.STAT_MODIFY,
                         duration=EffectDuration.WHILE_ON_FIELD,
-                        affected_filter=AffectedCardFilter(),
-                        effect_values={
-                            'atk_mod': cr_effect.atk_modifier,
-                            'def_mod': cr_effect.def_modifier,
-                        },
+                        modify_atk=cr_effect.atk_modifier,
+                        modify_def=cr_effect.def_modifier,
+                        affects_self_only=cr_effect.affects_self_only if hasattr(cr_effect, 'affects_self_only') else True,
                     )
-                    self.continuous_manager.register_effect(cont_effect)
+                    self._rules_engine.layers.register_effect(layered)
             except Exception as e:
-                print(f"[DEBUG] Error getting CR continuous effects: {e}")
+                print(f"[DEBUG] Error registering CR continuous effects: {e}")
 
-        # Also handle old-style effects for backward compatibility
+        # Also handle legacy effects for backward compatibility
+        from .scripts import EffectType
         for effect in script.get_effects():
             if effect.effect_type in (EffectType.CONTINUOUS, EffectType.STATIC):
-                # Build continuous effect from Effect dataclass
-                # This is a basic implementation - complex effects need custom scripts
-                if effect.value:
-                    cont_effect = OldContinuousEffect(
+                if effect.value and isinstance(effect.value, dict):
+                    layered = LayeredEffect(
                         source_id=card.uid,
                         name=effect.name or "Continuous Effect",
-                        layer=EffectLayer.STAT_MODIFY,
+                        layer=Layer.STAT_MODIFY,
                         duration=EffectDuration.WHILE_ON_FIELD,
-                        affected_filter=AffectedCardFilter(),
-                        effect_values=effect.value if isinstance(effect.value, dict) else {},
+                        modify_atk=effect.value.get('atk_mod', 0),
+                        modify_def=effect.value.get('def_mod', 0),
+                        affects_self_only=True,
                     )
-                    self.continuous_manager.register_effect(cont_effect)
+                    self._rules_engine.layers.register_effect(layered)
 
     def change_phase(self, new_phase: Phase):
         """Change to a new phase"""
@@ -785,11 +834,23 @@ class GameEngine:
         self._execute_card_effect(card, item.targets, item.effect_data)
 
     def _resolve_trigger(self, item: ChaseItem):
-        """Resolve a triggered ability from the TriggerManager"""
+        """Resolve a triggered ability.
+
+        Uses RulesEngine for CR 906 compliant resolution including
+        intervening-if condition checking.
+        """
+        if self._rules_engine:
+            # Use CR-compliant resolution (handles intervening-if)
+            success = self._rules_engine.resolve_trigger(item)
+            if success:
+                print(f"[DEBUG] Resolved trigger: {item.effect_data.get('trigger_name', 'unnamed')} from {item.source.data.name}", flush=True)
+            else:
+                print(f"[DEBUG] Trigger fizzled (condition no longer met): {item.effect_data.get('trigger_name', 'unnamed')}", flush=True)
+            return
+
+        # Legacy fallback
         card = item.source
         effect_data = item.effect_data
-
-        # Get the operation from the trigger
         operation = effect_data.get('operation')
         event_data = effect_data.get('event_data', {})
 
@@ -1789,10 +1850,15 @@ class GameEngine:
     def run_state_based_actions(self) -> bool:
         """
         Run state-based actions.
-        Returns True if any actions were taken.
+
+        CR 704: State-based actions are checked whenever a player would receive priority.
+        CR 909: Continuous effects are applied in layer order before checking state.
         """
-        # Apply continuous effects first (they modify ATK/DEF, keywords, etc.)
-        self.continuous_manager.apply_all_effects()
+        # Apply continuous effects first using LayerManager (CR 909)
+        if self._rules_engine:
+            self._rules_engine.apply_continuous_effects()
+        else:
+            self.continuous_manager.apply_all_effects()
 
         changed = True
         iterations = 0
@@ -1817,9 +1883,12 @@ class GameEngine:
 
             # Re-apply continuous effects if state changed
             if changed:
-                self.continuous_manager.apply_all_effects()
+                if self._rules_engine:
+                    self._rules_engine.apply_continuous_effects()
+                else:
+                    self.continuous_manager.apply_all_effects()
 
-        # Process any pending triggered abilities
+        # Process any pending triggered abilities (APNAP ordering)
         self.process_pending_triggers()
 
         self.emit(EventType.STATE_BASED_ACTIONS, -1)

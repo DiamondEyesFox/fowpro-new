@@ -1293,3 +1293,373 @@ class EffectBuilder:
     def become_copy() -> Effect:
         """Make source become a copy of target."""
         return Effect(action=EffectAction.BECOME_COPY)
+
+    # =========================================================================
+    # Extended effect methods for CR-compliant script generation
+    # =========================================================================
+
+    @staticmethod
+    def draw_variable() -> Effect:
+        """Draw cards equal to a variable amount (from game state)."""
+        return Effect(
+            action=EffectAction.DRAW,
+            params={'variable': True}
+        )
+
+    @staticmethod
+    def deal_damage_x() -> Effect:
+        """Deal X damage where X is from paid cost."""
+        return Effect(
+            action=EffectAction.DEAL_DAMAGE,
+            params={'x_variable': True}
+        )
+
+    @staticmethod
+    def deal_damage_equal_to_atk() -> Effect:
+        """Deal damage equal to source's ATK."""
+        return Effect(
+            action=EffectAction.DEAL_DAMAGE,
+            params={'equal_to_atk': True}
+        )
+
+    @staticmethod
+    def deal_damage_variable() -> Effect:
+        """Deal damage equal to a game state variable."""
+        return Effect(
+            action=EffectAction.DEAL_DAMAGE,
+            params={'variable': True}
+        )
+
+    @staticmethod
+    def deal_damage_mutual() -> Effect:
+        """Source and target deal damage to each other."""
+        return Effect(
+            action=EffectAction.DEAL_DAMAGE,
+            params={'mutual': True}
+        )
+
+    @staticmethod
+    def return_from_graveyard() -> Effect:
+        """Return target from graveyard to hand."""
+        return Effect(
+            action=EffectAction.RETURN_TO_HAND,
+            params={'from_zone': 'graveyard'}
+        )
+
+    @staticmethod
+    def gain_life_equal_to_damage() -> Effect:
+        """Gain life equal to damage dealt."""
+        return Effect(
+            action=EffectAction.GAIN_LIFE,
+            params={'equal_to_damage': True}
+        )
+
+    @staticmethod
+    def produce_will_any() -> Effect:
+        """Produce will of any attribute."""
+        return Effect(
+            action=EffectAction.PRODUCE_WILL,
+            params={'any_color': True}
+        )
+
+    @staticmethod
+    def rest_x_targets() -> Effect:
+        """Rest X target resonators where X is from paid cost."""
+        return Effect(
+            action=EffectAction.REST,
+            params={'x_variable': True}
+        )
+
+    @staticmethod
+    def scaling_buff(atk_per: int, def_per: int) -> Effect:
+        """Buff that scales with game state (e.g., +X/+X for each card)."""
+        return Effect(
+            action=EffectAction.MODIFY_ATK,
+            params={'atk_per': atk_per, 'def_per': def_per, 'scaling': True}
+        )
+
+    @staticmethod
+    def dynamic_stats() -> Effect:
+        """ATK/DEF calculated dynamically from game state."""
+        return Effect(
+            action=EffectAction.SET_ATK,
+            params={'dynamic': True}
+        )
+
+    @staticmethod
+    def double_damage() -> Effect:
+        """Source deals double damage."""
+        return Effect(
+            action=EffectAction.MODIFY_ATK,
+            params={'double_damage': True}
+        )
+
+    @staticmethod
+    def swap_stats() -> Effect:
+        """Swap ATK and DEF of target."""
+        return Effect(
+            action=EffectAction.MODIFY_ATK,
+            params={'swap_stats': True}
+        )
+
+    @staticmethod
+    def damage_replacement() -> Effect:
+        """Replace damage with an alternative effect."""
+        return Effect(
+            action=EffectAction.PREVENT_DAMAGE,
+            params={'replacement': True}
+        )
+
+    @staticmethod
+    def force_attack() -> Effect:
+        """Target must attack if able."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'force_attack': True}
+        )
+
+    @staticmethod
+    def force_block() -> Effect:
+        """Target must block if able."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'force_block': True}
+        )
+
+    @staticmethod
+    def redirect_target() -> Effect:
+        """Change the target of a spell/ability."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'redirect': True}
+        )
+
+    @staticmethod
+    def grant_to_others() -> Effect:
+        """Grant an ability to other permanents you control."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'to_others': True}
+        )
+
+    @staticmethod
+    def end_of_turn_trigger() -> Effect:
+        """Create an end-of-turn trigger effect."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'end_of_turn_trigger': True}
+        )
+
+    @staticmethod
+    def on_targeted_trigger() -> Effect:
+        """Trigger when this becomes targeted."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'on_targeted': True}
+        )
+
+    @staticmethod
+    def play_restriction() -> Effect:
+        """Restrict what can be played/summoned."""
+        return Effect(
+            action=EffectAction.REMOVE_ABILITY,
+            params={'restriction': True}
+        )
+
+    @staticmethod
+    def move_addition() -> Effect:
+        """Move an Addition from one target to another."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'move': True}
+        )
+
+    @staticmethod
+    def put_on_added_death() -> Effect:
+        """Put added resonator into field when it dies."""
+        return Effect(
+            action=EffectAction.PUT_INTO_FIELD,
+            params={'on_added_death': True}
+        )
+
+    @staticmethod
+    def search_on_death(destination: str = 'hand') -> Effect:
+        """Search when target goes to graveyard."""
+        return Effect(
+            action=EffectAction.SEARCH,
+            params={'destination': destination, 'on_death': True}
+        )
+
+    @staticmethod
+    def banish_self_conditional() -> Effect:
+        """Banish this card if condition is met."""
+        return Effect(
+            action=EffectAction.BANISH,
+            params={'self': True, 'conditional': True}
+        )
+
+    @staticmethod
+    def opponent_banishes() -> Effect:
+        """Opponent banishes a card."""
+        return Effect(
+            action=EffectAction.BANISH,
+            params={'controller': 'opponent'}
+        )
+
+    @staticmethod
+    def discard_all() -> Effect:
+        """Discard all cards in hand."""
+        return Effect(
+            action=EffectAction.DISCARD,
+            params={'all': True}
+        )
+
+    @staticmethod
+    def remove_ability() -> Effect:
+        """Remove a specific ability from target."""
+        return Effect(action=EffectAction.REMOVE_ABILITY)
+
+    @staticmethod
+    def add_restriction() -> Effect:
+        """Add a play/summon restriction."""
+        return Effect(
+            action=EffectAction.REMOVE_ABILITY,
+            params={'restriction': True}
+        )
+
+    @staticmethod
+    def prevent_recovery() -> Effect:
+        """Prevent target from recovering during recovery phase."""
+        return Effect(
+            action=EffectAction.REMOVE_ABILITY,
+            params={'prevent_recovery': True}
+        )
+
+    @staticmethod
+    def reveal_top() -> Effect:
+        """Reveal the top card of deck."""
+        return Effect(
+            action=EffectAction.REVEAL,
+            params={'from_top': True}
+        )
+
+    @staticmethod
+    def secret_choice() -> Effect:
+        """Make a secret choice (e.g., choose a number)."""
+        return Effect(
+            action=EffectAction.REVEAL,
+            params={'secret_choice': True}
+        )
+
+    @staticmethod
+    def redirect_damage() -> Effect:
+        """Redirect damage from one target to another."""
+        return Effect(
+            action=EffectAction.PREVENT_DAMAGE,
+            params={'redirect': True}
+        )
+
+    @staticmethod
+    def prevent_next_damage() -> Effect:
+        """Prevent the next damage that would be dealt."""
+        return Effect(
+            action=EffectAction.PREVENT_DAMAGE,
+            params={'next_only': True}
+        )
+
+    @staticmethod
+    def prevent_all_battle_damage() -> Effect:
+        """Prevent all battle damage."""
+        return Effect(
+            action=EffectAction.PREVENT_DAMAGE,
+            params={'all': True, 'battle_only': True}
+        )
+
+    @staticmethod
+    def prevent_all_damage() -> Effect:
+        """Prevent all damage."""
+        return Effect(
+            action=EffectAction.PREVENT_DAMAGE,
+            params={'all': True}
+        )
+
+    # =========================================================================
+    # Additional CR-compliant methods added for comprehensive effect coverage
+    # =========================================================================
+
+    @staticmethod
+    def remove_all_damage() -> Effect:
+        """Remove all damage from target (full heal)."""
+        return Effect(
+            action=EffectAction.REMOVE_DAMAGE,
+            params={'all': True}
+        )
+
+    @staticmethod
+    def summon() -> Effect:
+        """Summon a resonator (put on chase as spell, CR 1006)."""
+        return Effect(action=EffectAction.SUMMON)
+
+    @staticmethod
+    def copy_spell() -> Effect:
+        """Copy target spell or ability (CR 1017.3)."""
+        return Effect(
+            action=EffectAction.COPY,
+            params={'type': 'spell'}
+        )
+
+    @staticmethod
+    def copy_entity() -> Effect:
+        """Copy target entity, creating a token (CR 1017.2)."""
+        return Effect(
+            action=EffectAction.COPY,
+            params={'type': 'entity'}
+        )
+
+    @staticmethod
+    def foresee(count: int) -> Effect:
+        """Foresee X - look at top X, put any on top/bottom (CR 1034)."""
+        return Effect(
+            action=EffectAction.LOOK,
+            params={'count': count, 'foresee': True}
+        )
+
+    @staticmethod
+    def look(count: int) -> Effect:
+        """Look at top N cards of deck (CR 1014)."""
+        return Effect(
+            action=EffectAction.LOOK,
+            params={'count': count}
+        )
+
+    @staticmethod
+    def set_stats(atk: int, def_: int) -> Effect:
+        """Set both ATK and DEF to specific values."""
+        return Effect(
+            action=EffectAction.SET_ATK,
+            params={'atk': atk, 'def': def_}
+        )
+
+    @staticmethod
+    def set_race(race: str) -> Effect:
+        """Set target's race (replacing existing)."""
+        return Effect(
+            action=EffectAction.GRANT_RACE,
+            params={'race': race, 'replace': True}
+        )
+
+    @staticmethod
+    def call_magic_stone() -> Effect:
+        """Call a magic stone (CR 1016)."""
+        return Effect(
+            action=EffectAction.GRANT_ABILITY,
+            params={'call_stone': True}
+        )
+
+    @staticmethod
+    def remove_keyword(keyword) -> Effect:
+        """Remove a keyword ability from target."""
+        return Effect(
+            action=EffectAction.REMOVE_KEYWORD,
+            params={'keyword': keyword}
+        )
