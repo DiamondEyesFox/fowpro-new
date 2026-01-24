@@ -655,13 +655,16 @@ class CRAbilityParser:
             ))
 
         # Move onto (Addition movement)
-        move_match = re.search(r'move\s+(target\s+)?(.+?)\s+onto\s+', text)
+        # Use greedy match but stop at "onto" - the target phrase is between "move" and "onto"
+        move_match = re.search(r'move\s+(target\s+)?(.+?)\s+onto\s+(.+?)(?:\.|$)', text, re.IGNORECASE)
         if move_match:
-            target = self._parse_target_phrase(move_match.group(2) if move_match.group(2) else '')
+            source_phrase = move_match.group(2) if move_match.group(2) else ''
+            dest_phrase = move_match.group(3) if move_match.group(3) else ''
+            source_target = self._parse_target_phrase(source_phrase)
             effects.append(ParsedEffect(
                 action=EffectAction.GRANT_ABILITY,  # Moving an addition is like re-attaching
-                params={'move': True},
-                target=target,
+                params={'move': True, 'destination': dest_phrase},
+                target=source_target,
                 raw_text=move_match.group(0),
             ))
 

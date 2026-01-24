@@ -7,10 +7,15 @@ Complete Force of Will game engine with all mechanics.
 from __future__ import annotations
 import uuid
 import random
+import logging
 from dataclasses import dataclass, field
 from typing import Optional, Callable, Any
 from collections import deque
 from enum import Enum, auto
+
+# Configure module logger
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 from .models import (
     Card, CardData, CardType, Attribute, Zone, Phase, CombatStep,
@@ -37,6 +42,10 @@ def _get_trigger_manager_class():
 def _get_continuous_manager_class():
     from .scripts.continuous import ContinuousEffectManager
     return ContinuousEffectManager
+
+def _get_choice_manager_class():
+    from .rules.choices import ChoiceManager
+    return ChoiceManager
 
 
 # =============================================================================
@@ -78,6 +87,7 @@ class EventType(Enum):
     CHASE_ITEM_ADDED = auto()
     CHASE_ITEM_RESOLVED = auto()
     CHASE_ITEM_COUNTERED = auto()
+    SPELL_FIZZLED = auto()  # CR 903.5: All targets became illegal
 
     # Will/mana
     WILL_PRODUCED = auto()
@@ -94,6 +104,9 @@ class EventType(Enum):
 
     # State-based
     STATE_BASED_ACTIONS = auto()
+
+    # Reveal/look
+    CARD_REVEALED = auto()
 
 
 @dataclass
@@ -163,8 +176,13 @@ class GameEngine:
         # Effect system managers
         TriggerManager, _ = _get_trigger_manager_class()
         ContinuousEffectManager = _get_continuous_manager_class()
+        ChoiceManager = _get_choice_manager_class()
         self.trigger_manager = TriggerManager(self)
         self.continuous_manager = ContinuousEffectManager(self)
+        self.choice_manager = ChoiceManager(self)
+
+        # End-of-turn effect callbacks (for temporary effects)
+        self._eot_callbacks: list[Callable[[], None]] = []
 
         # Rules engine (CR-compliant wrapper) - initialize eagerly to set up event hooks
         self._rules_engine = None
@@ -216,20 +234,18 @@ class GameEngine:
         The RulesEngine hooks this method in _setup_event_hooks() and calls
         APNAPTriggerManager.check_triggers() after the event is processed.
         """
-        print(f"[DEBUG] emit: {event_type.name}", flush=True)
+        logger.debug(f"emit: {event_type.name}")
         event = GameEvent(event_type, player, card, target, data)
         self._event_queue.append(event)
 
         for i, handler in enumerate(self._event_handlers):
-            print(f"[DEBUG] emit: calling handler {i}", flush=True)
+            logger.debug(f"emit: calling handler {i}")
             try:
                 handler(event)
             except Exception as e:
-                print(f"[DEBUG] emit: handler {i} CRASHED: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
-                raise
-            print(f"[DEBUG] emit: handler {i} done", flush=True)
+                logger.exception(f"emit: Event handler {i} failed for {event_type.name}")
+                raise  # Re-raise to prevent undefined game state
+            logger.debug(f"emit: handler {i} done")
 
         # Note: Trigger checking moved to RulesEngine (CR 906 APNAP ordering)
         # Legacy _check_triggers() removed - triggers now handled by APNAPTriggerManager
@@ -277,6 +293,36 @@ class GameEngine:
             self.trigger_manager.process_pending_triggers()
 
     # =========================================================================
+    # END-OF-TURN EFFECT REGISTRATION
+    # =========================================================================
+
+    def register_end_of_turn_effect(self, callback: Callable[[], None]):
+        """Register a callback to be executed at end of turn.
+
+        Used for effects like "until end of turn" that need custom cleanup,
+        or keyword abilities like Eternal that trigger at EOT.
+        """
+        self._eot_callbacks.append(callback)
+
+    def register_eot_effect(self, callback: Callable[[], None]):
+        """Alias for register_end_of_turn_effect for brevity."""
+        self.register_end_of_turn_effect(callback)
+
+    def _execute_eot_callbacks(self):
+        """Execute and clear all end-of-turn callbacks.
+
+        Called during end of turn cleanup.
+        """
+        callbacks = self._eot_callbacks.copy()
+        self._eot_callbacks.clear()
+
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception as e:
+                logger.exception(f"Error in EOT callback: {e}")
+
+    # =========================================================================
     # CARD MANAGEMENT
     # =========================================================================
 
@@ -322,6 +368,14 @@ class GameEngine:
             'void': pool.void,
         }
 
+    def is_ai_player(self, player: int) -> bool:
+        """Check if a player is AI-controlled.
+
+        Used by ChoiceManager to determine if choices should be
+        made automatically or presented to the UI.
+        """
+        return getattr(self.players[player], 'is_ai', False)
+
     def spend_will(self, player: int, will_type: str, amount: int) -> bool:
         """
         Spend will from a player's pool.
@@ -343,7 +397,7 @@ class GameEngine:
 
     def move_card(self, card: Card, to_zone: Zone, to_player: Optional[int] = None):
         """Move a card to a new zone"""
-        print(f"[DEBUG] move_card: {card.data.name} to {to_zone.name}", flush=True)
+        logger.debug(f"move_card: {card.data.name} to {to_zone.name}")
         from_zone = card.zone
         from_player = card.controller
 
@@ -381,9 +435,9 @@ class GameEngine:
         # Emit zone-specific events and call script hooks
         # Register scripts for FIELD and RULER_AREA (rulers have continuous abilities like Grimm)
         if to_zone in (Zone.FIELD, Zone.RULER_AREA) and from_zone not in (Zone.FIELD, Zone.RULER_AREA):
-            print(f"[DEBUG] move_card: setting up card for {card.data.name} (code={card.data.code})", flush=True)
+            logger.debug(f"move_card: setting up card for {card.data.name} (code={card.data.code})")
             script = self.get_script(card)
-            print(f"[DEBUG] move_card: got script {script.__class__.__name__} for {card.data.code}", flush=True)
+            logger.debug(f"move_card: got script {script.__class__.__name__} for {card.data.code}")
             try:
                 # Initialize the script BEFORE emitting event (so triggers are registered)
                 script.initial_effect(self, card)
@@ -392,23 +446,25 @@ class GameEngine:
                 # Register card's continuous effects
                 self._register_card_continuous_effects(card, script)
             except Exception as e:
-                print(f"[DEBUG] move_card: script setup CRASHED: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
-                raise
+                logger.exception(f"move_card: Script setup failed for {card.data.name}")
+                raise  # Re-raise to prevent undefined game state
 
             # Only emit ENTERS_FIELD for actual field entry (not ruler area)
             if to_zone == Zone.FIELD:
                 # NOW emit the event (triggers are registered and will fire)
-                print(f"[DEBUG] move_card: emitting ENTERS_FIELD for {card.data.name}", flush=True)
+                logger.debug(f"move_card: emitting ENTERS_FIELD for {card.data.name}")
                 self.emit(EventType.ENTERS_FIELD, card.controller, card)
+
+                # Process pending triggers immediately so ETB abilities go on chase now
+                # (not at end of turn)
+                self.process_pending_triggers()
 
                 # Call script's on_enter_field hook (legacy, for manual handling)
                 try:
                     script.on_enter_field(self, card)
                 except Exception as e:
-                    print(f"[DEBUG] move_card: on_enter_field hook error: {e}", flush=True)
-                print(f"[DEBUG] move_card: on_enter_field done for {card.data.name}", flush=True)
+                    logger.exception(f"move_card: on_enter_field hook error for {card.data.name}")
+                logger.debug(f"move_card: on_enter_field done for {card.data.name}")
 
         if from_zone == Zone.FIELD and to_zone != Zone.FIELD:
             self.emit(EventType.LEAVES_FIELD, from_player, card)
@@ -483,9 +539,9 @@ class GameEngine:
                     script.initial_effect(self, p.ruler)
                     self._register_card_triggers(p.ruler, script)
                     self._register_card_continuous_effects(p.ruler, script)
-                    print(f"[DEBUG] start_game: Initialized ruler script for {p.ruler.data.name}")
+                    logger.debug(f"start_game: Initialized ruler script for {p.ruler.data.name}")
                 except Exception as e:
-                    print(f"[DEBUG] start_game: Ruler script init error: {e}")
+                    logger.exception(f"start_game: Ruler script init failed for {p.ruler.data.name}")
 
         self.emit(EventType.GAME_START, first_player)
 
@@ -542,7 +598,7 @@ class GameEngine:
                 try:
                     script.on_turn_end(self, card)
                 except Exception as e:
-                    print(f"[DEBUG] on_turn_end hook error for {card.data.name}: {e}")
+                    logger.exception(f"on_turn_end hook failed for {card.data.name}")
 
     def _register_card_triggers(self, card: Card, script):
         """Register a card's triggered abilities with RulesEngine's APNAPTriggerManager.
@@ -631,7 +687,7 @@ class GameEngine:
                     )
                     self._rules_engine.layers.register_effect(layered)
             except Exception as e:
-                print(f"[DEBUG] Error registering CR continuous effects: {e}")
+                logger.exception(f"Error registering CR continuous effects for {card.data.name}")
 
         # Also handle legacy effects for backward compatibility
         from .scripts import EffectType
@@ -665,7 +721,7 @@ class GameEngine:
                         mod.source_id = card.uid
                         self._rules_engine.costs.register_payment_modifier(mod)
             except Exception as e:
-                print(f"[DEBUG] Error registering cost modifiers: {e}")
+                logger.exception(f"Error registering cost modifiers for {card.data.name}")
 
         # Register replacement effects (CR 910)
         if hasattr(script, 'get_replacement_effects'):
@@ -676,7 +732,7 @@ class GameEngine:
                     effect.source_id = card.uid
                     self._rules_engine.replacement.register_effect(effect)
             except Exception as e:
-                print(f"[DEBUG] Error registering replacement effects: {e}")
+                logger.exception(f"Error registering replacement effects for {card.data.name}")
 
     def change_phase(self, new_phase: Phase):
         """Change to a new phase"""
@@ -700,27 +756,27 @@ class GameEngine:
         """Advance to the next phase"""
         # If in battle, resolve combat first instead of advancing phase
         if self.battle.in_battle:
-            print(f"[DEBUG] advance_phase: in battle, advancing combat instead")
+            logger.debug(f"advance_phase: in battle, advancing combat instead")
             self.advance_combat_step()
             return
 
         # Official FoW order: Draw → Recovery → Main → End
         phases = [Phase.DRAW, Phase.RECOVERY, Phase.MAIN, Phase.END]
         idx = phases.index(self.current_phase)
-        print(f"[DEBUG] advance_phase: turn={self.turn_number}, player={self.turn_player}, current={self.current_phase.name}")
+        logger.debug(f"advance_phase: turn={self.turn_number}, player={self.turn_player}, current={self.current_phase.name}")
 
         if idx == len(phases) - 1:
             # End phase -> next turn
-            print(f"[DEBUG] advance_phase: calling end_turn()")
+            logger.debug(f"advance_phase: calling end_turn()")
             self.end_turn()
         else:
             next_phase = phases[idx + 1]
-            print(f"[DEBUG] advance_phase: changing to {next_phase.name}")
+            logger.debug(f"advance_phase: changing to {next_phase.name}")
             self.change_phase(next_phase)
 
     def end_turn(self):
         """End the current turn"""
-        print(f"[DEBUG] end_turn: BEFORE turn={self.turn_number}, player={self.turn_player}")
+        logger.debug(f"end_turn: BEFORE turn={self.turn_number}, player={self.turn_player}")
 
         # Call on_turn_end hooks on all cards controlled by turn player
         self._call_turn_end_hooks(self.turn_player)
@@ -732,6 +788,9 @@ class GameEngine:
 
         # Clear "until end of turn" continuous effects
         self.continuous_manager.remove_end_of_turn_effects()
+
+        # Execute registered end-of-turn callbacks (for custom EOT effects)
+        self._execute_eot_callbacks()
 
         # Clear will pools at end of End Phase (rule 505.5c)
         for p in self.players:
@@ -750,7 +809,7 @@ class GameEngine:
         self.turn_number += 1
         self.turn_player = 1 - self.turn_player
         self.is_first_turn = False
-        print(f"[DEBUG] end_turn: AFTER turn={self.turn_number}, player={self.turn_player}")
+        logger.debug(f"end_turn: AFTER turn={self.turn_number}, player={self.turn_player}")
 
         # Start next turn
         self.start_turn()
@@ -758,7 +817,7 @@ class GameEngine:
     def _do_recovery_phase(self):
         """Recovery phase logic"""
         p = self.players[self.turn_player]
-        print(f"[DEBUG] _do_recovery_phase: turn={self.turn_number}, player={self.turn_player}, has_had_recovery={p.has_had_recovery}")
+        logger.debug(f"_do_recovery_phase: turn={self.turn_number}, player={self.turn_player}, has_had_recovery={p.has_had_recovery}")
 
         # Clear will pool at start of Recovery Phase (rule 503.4)
         p.will_pool.clear()
@@ -767,20 +826,20 @@ class GameEngine:
         # Track this per-player, not globally
         if not p.has_had_recovery:
             p.has_had_recovery = True
-            print(f"[DEBUG] Recovery SKIPPED: turn={self.turn_number}, player={self.turn_player}, first recovery - setting has_had_recovery=True")
+            logger.debug(f"Recovery SKIPPED: turn={self.turn_number}, player={self.turn_player}, first recovery - setting has_had_recovery=True")
             return  # Skip recovery on first turn
 
         # Recover all rested cards
         rested_count = sum(1 for c in p.field if c.is_rested)
         for card in p.field:
-            print(f"[DEBUG] Recovering card: {card.data.name}, was_rested={card.is_rested}")
+            logger.debug(f"Recovering card: {card.data.name}, was_rested={card.is_rested}")
             card.recover()
-        print(f"[DEBUG] Recovery COMPLETE: turn={self.turn_number}, player={self.turn_player}, recovered {rested_count} cards")
+        logger.debug(f"Recovery COMPLETE: turn={self.turn_number}, player={self.turn_player}, recovered {rested_count} cards")
 
         # Ruler/J-Ruler also recovers
         if p.ruler and p.ruler.is_rested:
             p.ruler.recover()
-            print(f"[DEBUG] Ruler recovered")
+            logger.debug(f"Ruler recovered")
 
     def _do_draw_phase(self):
         """Draw phase logic"""
@@ -790,17 +849,43 @@ class GameEngine:
             self.players[self.turn_player].has_drawn_for_turn = True
 
     def _do_end_phase(self):
-        """End phase logic"""
+        """End phase logic
+
+        CR 701.6: At end of turn, if player has more than 7 cards in hand,
+        they must discard down to 7.
+        """
         p = self.players[self.turn_player]
 
-        # Discard down to 7 cards
+        # Discard down to 7 cards - player chooses which to discard
         while len(p.hand) > 7:
-            # In real game, player chooses. For now, discard random
-            card = p.hand[-1]
-            self.move_card(card, Zone.GRAVEYARD)
+            discard_count = len(p.hand) - 7
 
-        # Clear "until end of turn" effects
-        # TODO: Implement temporary effect clearing
+            # Player chooses which card(s) to discard
+            cards_to_discard = self.choice_manager.request_card_from_list(
+                player=self.turn_player,
+                source=None,  # No source card - game rule
+                cards=list(p.hand),
+                count=discard_count,
+                up_to=False,  # Must discard exactly the required amount
+                prompt=f"Discard {discard_count} card{'s' if discard_count > 1 else ''} (hand limit: 7)"
+            )
+
+            # Discard the chosen cards
+            if cards_to_discard:
+                for card in cards_to_discard:
+                    if card in p.hand:
+                        logger.debug(f"Player {self.turn_player} discards {card.data.name} to hand limit")
+                        self.move_card(card, Zone.GRAVEYARD)
+            else:
+                # Fallback if no choice made (shouldn't happen with mandatory choice)
+                logger.warning("No discard choice made - using default")
+                card = p.hand[-1]
+                self.move_card(card, Zone.GRAVEYARD)
+
+            # After discarding chosen cards, loop will exit if hand <= 7
+
+        # Note: "Until end of turn" effect clearing happens in end_turn()
+        # via continuous_manager.remove_end_of_turn_effects() and _execute_eot_callbacks()
 
     # =========================================================================
     # PRIORITY SYSTEM
@@ -882,11 +967,80 @@ class GameEngine:
             self._resolve_top_chase_item()
 
     def _resolve_spell(self, item: ChaseItem):
-        """Resolve a spell"""
-        card = item.source
+        """Resolve a spell.
 
-        # Execute spell effect
-        self._execute_card_effect(card, item.targets)
+        CR 903.5: If all targets become illegal before resolution, spell fizzles.
+        """
+        card = item.source
+        controller = item.controller
+
+        # Validate targets still exist and are legal (CR 903.5)
+        if item.targets:
+            script = self.get_script(card)
+            requirements = []
+            if script and hasattr(script, 'get_target_requirements'):
+                try:
+                    requirements = script.get_target_requirements(self, card) or []
+                except Exception:
+                    requirements = []
+
+            valid_targets = []
+            for target in item.targets:
+                if isinstance(target, Card):
+                    # Check target still exists in a valid zone
+                    if target.zone not in (Zone.FIELD, Zone.GRAVEYARD, Zone.HAND):
+                        logger.debug(f"Spell target {target.data.name} no longer in valid zone")
+                        continue
+                    # Check target is still valid (no Barrier granted, etc.)
+                    if not self.is_valid_target(card, target, card.controller):
+                        logger.debug(f"Spell target {target.data.name} no longer valid (Barrier?)")
+                        continue
+                    # If requirements exist, target must match at least one filter
+                    if requirements:
+                        if not any(self.is_valid_target(card, target, card.controller, req.filter)
+                                   for req in requirements):
+                            logger.debug(f"Spell target {target.data.name} no longer matches requirements")
+                            continue
+                    valid_targets.append(target)
+                else:
+                    # Non-card targets (players) are always valid
+                    valid_targets.append(target)
+
+            # If spell required targets and all are now invalid, fizzle
+            if len(item.targets) > 0 and len(valid_targets) == 0:
+                if requirements and all(req.validate_count(0) for req in requirements):
+                    # Up-to targets; allow zero without fizzle
+                    item.targets = valid_targets
+                    return
+                logger.info(f"Spell {card.data.name} fizzled - all targets invalid")
+                self.emit(EventType.SPELL_FIZZLED, card.controller, card)
+                self.move_card(card, Zone.GRAVEYARD)
+                return
+
+            item.targets = valid_targets
+
+        # Check for modal spell effects
+        modal_choices = item.effect_data.get('modal_choices', []) if item.effect_data else []
+
+        if modal_choices:
+            # Execute selected modal effects
+            script = self.get_script(card)
+            if script:
+                abilities = getattr(script, '_abilities', [])
+                for ability in abilities:
+                    if hasattr(ability, 'choices') and ability.choices:
+                        # Execute chosen effects
+                        for idx in modal_choices:
+                            if 0 <= idx < len(ability.choices):
+                                name, effect = ability.choices[idx]
+                                logger.debug(f"Executing modal choice {idx}: {name}")
+                                if effect:
+                                    # Execute the effect
+                                    effect.execute(self, card, item.targets, controller)
+                        break
+        else:
+            # Execute spell effect (non-modal)
+            self._execute_card_effect(card, item.targets, item.effect_data)
 
         # Move to graveyard
         self.move_card(card, Zone.GRAVEYARD)
@@ -903,9 +1057,77 @@ class GameEngine:
                 ability_index = item.effect_data['ability_index']
                 if ability_index < len(abilities):
                     ability = abilities[ability_index]
-                    if ability.operation:
-                        ability.operation(self, card)
-                    return
+                    # CR ActivateAbility path
+                    try:
+                        from .rules.abilities import ActivateAbility as CRActivateAbility
+                        if isinstance(ability, CRActivateAbility):
+                            targets = item.targets or []
+
+                            # Revalidate targets on resolution
+                            if ability.targets and targets:
+                                valid_targets = []
+                                for target in targets:
+                                    if not hasattr(target, 'uid'):
+                                        valid_targets.append(target)
+                                        continue
+                                    if any(
+                                        self.is_valid_target(card, target, card.controller, req.filter)
+                                        for req in ability.targets
+                                    ):
+                                        valid_targets.append(target)
+                                if not valid_targets and any(not req.validate_count(0) for req in ability.targets):
+                                    self.emit(EventType.SPELL_FIZZLED, card.controller, card)
+                                    return
+                                targets = valid_targets
+
+                            # Execute effects (costs already paid on activation)
+                            for effect in ability.effects:
+                                effect.execute(self, card, targets, card.controller)
+                            return
+                    except Exception:
+                        pass
+
+                    # Legacy operation path
+                    if hasattr(ability, 'operation') and ability.operation:
+                        # Revalidate targets for legacy abilities if present
+                        if item.targets:
+                            try:
+                                from .rules.targeting import CommonFilters
+                                filter_map = {
+                                    "j_resonator": CommonFilters.j_resonator(),
+                                    "resonator": CommonFilters.resonator(),
+                                    "addition": CommonFilters.addition(),
+                                    "magic_stone": CommonFilters.magic_stone(),
+                                    "opponent_j_resonator": CommonFilters.opponent_j_resonator(),
+                                    "your_j_resonator": CommonFilters.your_j_resonator(),
+                                }
+                                target_filter = filter_map.get(getattr(ability, 'target_filter', ''), None)
+                            except Exception:
+                                target_filter = None
+
+                            valid_targets = []
+                            for target in item.targets:
+                                if not hasattr(target, 'uid'):
+                                    valid_targets.append(target)
+                                    continue
+                                if self.is_valid_target(card, target, card.controller, target_filter):
+                                    valid_targets.append(target)
+
+                            if not valid_targets and getattr(ability, 'requires_target', False):
+                                self.emit(EventType.SPELL_FIZZLED, card.controller, card)
+                                return
+
+                            item.targets = valid_targets
+
+                        try:
+                            if item.targets:
+                                ability.operation(self, card, item.targets)
+                            else:
+                                ability.operation(self, card)
+                        except TypeError:
+                            # Fallback if operation doesn't accept targets
+                            ability.operation(self, card)
+                        return
 
         # Fallback to old behavior
         self._execute_card_effect(card, item.targets, item.effect_data)
@@ -920,9 +1142,9 @@ class GameEngine:
             # Use CR-compliant resolution (handles intervening-if)
             success = self._rules_engine.resolve_trigger(item)
             if success:
-                print(f"[DEBUG] Resolved trigger: {item.effect_data.get('trigger_name', 'unnamed')} from {item.source.data.name}", flush=True)
+                logger.debug(f"Resolved trigger: {item.effect_data.get('trigger_name', 'unnamed')} from {item.source.data.name}")
             else:
-                print(f"[DEBUG] Trigger fizzled (condition no longer met): {item.effect_data.get('trigger_name', 'unnamed')}", flush=True)
+                logger.debug(f"Trigger fizzled (condition no longer met): {item.effect_data.get('trigger_name', 'unnamed')}")
             return
 
         # Legacy fallback
@@ -934,11 +1156,9 @@ class GameEngine:
         if operation:
             try:
                 operation(self, card, event_data)
-                print(f"[DEBUG] Resolved trigger: {effect_data.get('trigger_name', 'unnamed')} from {card.data.name}", flush=True)
+                logger.debug(f"Resolved trigger: {effect_data.get('trigger_name', 'unnamed')} from {card.data.name}")
             except Exception as e:
-                print(f"[DEBUG] Trigger resolution failed: {e}", flush=True)
-                import traceback
-                traceback.print_exc()
+                logger.exception(f"Trigger resolution failed for {card.data.name}: {effect_data.get('trigger_name', 'unnamed')}")
 
     def _resolve_judgment(self, item: ChaseItem):
         """Resolve a Judgment"""
@@ -974,7 +1194,7 @@ class GameEngine:
         script = self.get_script(card)
         if hasattr(script, 'on_resolve'):
             script.on_resolve(self, card)
-        print(f"[DEBUG] Executed effect for {card.data.name}", flush=True)
+        logger.debug(f"Executed effect for {card.data.name}")
 
     # =========================================================================
     # CARD ACTIONS
@@ -1001,7 +1221,7 @@ class GameEngine:
 
     def call_stone(self, player: int) -> bool:
         """Call a magic stone - requires resting the ruler"""
-        print(f"[DEBUG] call_stone: player={player}", flush=True)
+        logger.debug(f"call_stone: player={player}")
         p = self.players[player]
 
         # Check conditions
@@ -1018,18 +1238,18 @@ class GameEngine:
             return False
 
         # Rest the ruler
-        print(f"[DEBUG] call_stone: resting ruler", flush=True)
+        logger.debug(f"call_stone: resting ruler")
         p.ruler.rest()
 
         # Call stone
         stone = p.stone_deck.pop(0)
-        print(f"[DEBUG] call_stone: moving stone {stone.data.name}", flush=True)
+        logger.debug(f"call_stone: moving stone {stone.data.name}")
         self.move_card(stone, Zone.FIELD, player)
         p.has_called_stone = True
 
-        print(f"[DEBUG] call_stone: emitting event", flush=True)
+        logger.debug(f"call_stone: emitting event")
         self.emit(EventType.STONE_CALLED, player, stone)
-        print(f"[DEBUG] call_stone: done", flush=True)
+        logger.debug(f"call_stone: done")
         return True
 
     def produce_will(self, player: int, card: Card, chosen_attr: Attribute = None) -> bool:
@@ -1061,8 +1281,23 @@ class GameEngine:
         elif len(available_colors) == 1:
             attr = available_colors[0]
         else:
-            # Multiple colors available but none chosen - use first
-            attr = available_colors[0]
+            # Multiple colors available - request choice if possible
+            attr = None
+            if self._rules_engine:
+                try:
+                    options = [a.name.capitalize() for a in available_colors]
+                    chosen = self._rules_engine.request_attribute(
+                        player, card, options=options,
+                        prompt=f"Choose will color for {card.data.name}"
+                    )
+                    if chosen:
+                        attr = Attribute[chosen.upper()]
+                except Exception:
+                    attr = None
+
+            # Fallback to first if no choice made
+            if attr is None:
+                attr = available_colors[0]
 
         # Validate the chosen color is valid for this card
         if attr not in available_colors and attr != Attribute.VOID:
@@ -1100,6 +1335,86 @@ class GameEngine:
 
         ability = abilities[ability_index]
 
+        # Determine ability type (CR ActivateAbility vs legacy Effect)
+        is_cr_ability = False
+        try:
+            from .rules.abilities import ActivateAbility as CRActivateAbility
+            is_cr_ability = isinstance(ability, CRActivateAbility)
+        except Exception:
+            is_cr_ability = False
+
+        if is_cr_ability:
+            # CR ActivateAbility: verify it can be played
+            if not ability.can_play(self, card, player):
+                return False
+
+            # Request targets if needed and not provided
+            if ability.targets and not targets:
+                if self._rules_engine:
+                    targets = self._rules_engine.request_targets(
+                        player, card, ability.targets,
+                        prompt=f"Choose targets for {ability.name}"
+                    )
+                if not targets and any(not req.validate_count(0) for req in ability.targets):
+                    return False
+
+            # Additional costs for CR abilities are not wired yet
+            if getattr(ability, 'additional_costs', None):
+                logger.warning(
+                    f"ActivateAbility additional_costs not implemented for {card.data.name} ({ability.name})"
+                )
+                return False
+
+            # Pay costs now (activation time)
+            if ability.will_cost:
+                if not p.will_pool.can_pay(ability.will_cost):
+                    return False
+                p.will_pool.pay(ability.will_cost)
+                self.emit(EventType.WILL_SPENT, player, card, cost=str(ability.will_cost))
+            if ability.tap_cost:
+                card.rest()
+
+            # Mark once-per-turn usage
+            if ability.once_per_turn:
+                ability.used_this_turn = True
+
+            # CR activated abilities use the chase
+            item = ChaseItem(
+                uid=str(uuid.uuid4()),
+                source=card,
+                item_type="ABILITY",
+                controller=player,
+                targets=targets or [],
+                effect_data={"ability_index": ability_index, "cr_ability": True},
+            )
+            self.add_to_chase(item)
+            return True
+
+        # Legacy ActivatedAbility target selection (if needed)
+        if getattr(ability, 'requires_target', False) and not targets:
+            if self._rules_engine:
+                try:
+                    from .rules.targeting import TargetRequirement, CommonFilters
+                    filter_map = {
+                        "j_resonator": CommonFilters.j_resonator(),
+                        "resonator": CommonFilters.resonator(),
+                        "addition": CommonFilters.addition(),
+                        "magic_stone": CommonFilters.magic_stone(),
+                        "opponent_j_resonator": CommonFilters.opponent_j_resonator(),
+                        "your_j_resonator": CommonFilters.your_j_resonator(),
+                    }
+                    target_filter = filter_map.get(getattr(ability, 'target_filter', ''), CommonFilters.j_resonator())
+                    requirements = [TargetRequirement(count=1, filter=target_filter)]
+                    targets = self._rules_engine.request_targets(
+                        player, card, requirements,
+                        prompt=f"Choose targets for {ability.name}"
+                    )
+                except Exception:
+                    targets = None
+
+            if not targets:
+                return False
+
         # Check costs
         if ability.will_cost and not p.will_pool.can_pay(ability.will_cost):
             return False
@@ -1119,7 +1434,7 @@ class GameEngine:
                 # Cost couldn't be paid, refund will
                 if ability.will_cost:
                     for attr, amount in ability.will_cost.to_dict().items():
-                        if attr != 'generic':
+                        if attr not in ('void', 'x'):
                             attr_enum = Attribute[attr.upper()]
                             p.will_pool.add(attr_enum, amount)
                 return False
@@ -1129,7 +1444,8 @@ class GameEngine:
             ability._activated_this_turn = True
 
         # Check if this ability uses the Chase
-        if ability.uses_chase:
+        uses_chase = getattr(ability, 'uses_chase', True)
+        if uses_chase:
             # Add to Chase for resolution
             item = ChaseItem(
                 uid=str(uuid.uuid4()),
@@ -1364,7 +1680,7 @@ class GameEngine:
         p = self.players[player]
 
         # Pay {2} to set in standby
-        standby_cost = WillCost(generic=2)
+        standby_cost = WillCost(void=2)
         if not p.will_pool.can_pay(standby_cost):
             return False
 
@@ -1606,11 +1922,43 @@ class GameEngine:
         """Play a spell (add to chase)"""
         p = self.players[player]
 
+        # Check for modal choices (CR 903.2a - choices are made as spell is cast)
+        modal_choices = None
+        script = self.get_script(card)
+        if script:
+            # Check for registered ModalAbility
+            abilities = getattr(script, '_abilities', [])
+            for ability in abilities:
+                if hasattr(ability, 'choices') and ability.choices:
+                    # This is a modal spell - request choice from player
+                    if self._rules_engine:
+                        from .rules.modals import ModalChoice, Mode
+                        choose_count = ability.choose_count if hasattr(ability, 'choose_count') else 1
+                        if hasattr(ability, 'get_choose_count'):
+                            try:
+                                choose_count = ability.get_choose_count(self, card, player)
+                            except Exception:
+                                pass
+                        modal = ModalChoice(
+                            modes=[Mode(name=name, description=name, operation=lambda g,c,d: None)
+                                   for name, effect in ability.choices],
+                            choose_count=choose_count,
+                            up_to=ability.up_to if hasattr(ability, 'up_to') else False,
+                            prompt=f"Choose for {card.data.name}"
+                        )
+                        modal_choices = self._rules_engine.request_modal_choice(player, card, modal)
+                        logger.debug(f"Modal choices for {card.data.name}: {modal_choices}")
+                    break
+
         # Remove from hand
         p.hand.remove(card)
         card.zone = Zone.CHASE
 
-        # Create chase item
+        # Create chase item with modal choices stored in effect_data
+        effect_data = {}
+        if modal_choices is not None:
+            effect_data['modal_choices'] = modal_choices
+
         item = ChaseItem(
             uid=f"chase_{len(self.chase)}",
             source=card,
@@ -1618,6 +1966,7 @@ class GameEngine:
             controller=player,
             targets=targets or [],
             paid_cost=card.data.cost,
+            effect_data=effect_data,
         )
 
         self.add_to_chase(item)
@@ -1681,32 +2030,32 @@ class GameEngine:
     def declare_attack(self, player: int, attacker: Card,
                        target_player: int = None, target_card: Card = None) -> bool:
         """Declare an attack"""
-        print(f"[DEBUG] declare_attack: {attacker.data.name}, in_battle={self.battle.in_battle}, phase={self.current_phase.name}, player={player}, turn_player={self.turn_player}", flush=True)
+        logger.debug(f"declare_attack: {attacker.data.name}, in_battle={self.battle.in_battle}, phase={self.current_phase.name}, player={player}, turn_player={self.turn_player}")
         if self.battle.in_battle:
-            print(f"[DEBUG] declare_attack FAIL: already in battle", flush=True)
+            logger.debug(f"declare_attack FAIL: already in battle")
             return False
         if self.current_phase != Phase.MAIN:
-            print(f"[DEBUG] declare_attack FAIL: not main phase", flush=True)
+            logger.debug(f"declare_attack FAIL: not main phase")
             return False
         if player != self.turn_player:
-            print(f"[DEBUG] declare_attack FAIL: not turn player", flush=True)
+            logger.debug(f"declare_attack FAIL: not turn player")
             return False
         if attacker.zone != Zone.FIELD:
-            print(f"[DEBUG] declare_attack FAIL: not on field", flush=True)
+            logger.debug(f"declare_attack FAIL: not on field")
             return False
         if attacker.is_rested:
-            print(f"[DEBUG] declare_attack FAIL: attacker is rested", flush=True)
+            logger.debug(f"declare_attack FAIL: attacker is rested")
             return False
 
         # Check for summoning sickness
         if (attacker.entered_turn == self.turn_number and
             not attacker.has_keyword(Keyword.SWIFTNESS)):
-            print(f"[DEBUG] declare_attack FAIL: summoning sickness", flush=True)
+            logger.debug(f"declare_attack FAIL: summoning sickness")
             return False
 
         # Check CANNOT_ATTACK keyword
         if attacker.has_keyword(Keyword.CANNOT_ATTACK):
-            print(f"[DEBUG] declare_attack FAIL: has CANNOT_ATTACK", flush=True)
+            logger.debug(f"declare_attack FAIL: has CANNOT_ATTACK")
             return False
 
         # Check if attacking a resonator (requires Target Attack)
@@ -1714,16 +2063,16 @@ class GameEngine:
             # Must have TARGET_ATTACK to attack resonators directly
             if target_card.data.is_resonator():
                 if not attacker.has_keyword(Keyword.TARGET_ATTACK):
-                    print(f"[DEBUG] declare_attack FAIL: no TARGET_ATTACK to attack resonator", flush=True)
+                    logger.debug(f"declare_attack FAIL: no TARGET_ATTACK to attack resonator")
                     return False
 
                 # PRECISION allows attacking recovered resonators
                 # Without it, can only attack rested resonators
                 if not target_card.is_rested and not attacker.has_keyword(Keyword.PRECISION):
-                    print(f"[DEBUG] declare_attack FAIL: target recovered, no PRECISION", flush=True)
+                    logger.debug(f"declare_attack FAIL: target recovered, no PRECISION")
                     return False
 
-        print(f"[DEBUG] declare_attack: SUCCESS, starting battle", flush=True)
+        logger.debug(f"declare_attack: SUCCESS, starting battle")
 
         # Rest attacker (unless Vigilance)
         if not attacker.has_keyword(Keyword.VIGILANCE):
@@ -1746,7 +2095,7 @@ class GameEngine:
             try:
                 script.on_attack(self, attacker)
             except Exception as e:
-                print(f"[DEBUG] on_attack hook error: {e}")
+                logger.exception(f"on_attack hook failed for {attacker.data.name}")
 
         # Give priority to defending player
         self.give_priority(self.battle.defending_player)
@@ -1792,7 +2141,7 @@ class GameEngine:
 
     def advance_combat_step(self):
         """Advance to the next combat step"""
-        print(f"[DEBUG] advance_combat_step: current step={self.battle.step.name}", flush=True)
+        logger.debug(f"advance_combat_step: current step={self.battle.step.name}")
         steps = [
             CombatStep.DECLARE_ATTACK,
             CombatStep.DECLARE_BLOCKER,
@@ -1816,22 +2165,22 @@ class GameEngine:
                 idx += 1  # Skip first strike damage
 
         if idx >= len(steps) - 1:
-            print(f"[DEBUG] advance_combat_step: at end, calling _end_combat", flush=True)
+            logger.debug(f"advance_combat_step: at end, calling _end_combat")
             self._end_combat()
             return
 
         self.battle.step = steps[idx + 1]
-        print(f"[DEBUG] advance_combat_step: new step={self.battle.step.name}", flush=True)
+        logger.debug(f"advance_combat_step: new step={self.battle.step.name}")
 
         # Handle damage steps
         if self.battle.step == CombatStep.FIRST_STRIKE_DAMAGE:
-            print(f"[DEBUG] advance_combat_step: dealing first strike damage", flush=True)
+            logger.debug(f"advance_combat_step: dealing first strike damage")
             self._deal_first_strike_damage()
         elif self.battle.step == CombatStep.NORMAL_DAMAGE:
-            print(f"[DEBUG] advance_combat_step: dealing normal damage", flush=True)
+            logger.debug(f"advance_combat_step: dealing normal damage")
             self._deal_normal_damage()
         elif self.battle.step == CombatStep.END_OF_BATTLE:
-            print(f"[DEBUG] advance_combat_step: end of battle step, calling _end_combat", flush=True)
+            logger.debug(f"advance_combat_step: end of battle step, calling _end_combat")
             self._end_combat()
 
     def _deal_first_strike_damage(self):
@@ -1862,7 +2211,11 @@ class GameEngine:
                 self._deal_combat_damage(blocker, first_strike=False, is_blocker=True)
 
     def _deal_combat_damage(self, card: Card, first_strike: bool = False, is_blocker: bool = False):
-        """Deal combat damage from a card"""
+        """Deal combat damage from a card.
+
+        CR 807.3: If attacker is blocked by multiple blockers, the attacking
+        player assigns damage to blockers in an order they choose.
+        """
         damage = card.effective_atk
 
         if is_blocker:
@@ -1873,13 +2226,37 @@ class GameEngine:
         else:
             # Attacker damages blocker(s) or player
             if self.battle.blockers:
-                # Damage first blocker (simplified)
-                target = self.battle.blockers[0]
-                self._deal_damage_to_card(target, damage, card)
+                if len(self.battle.blockers) == 1:
+                    # Single blocker - straightforward
+                    target = self.battle.blockers[0]
+                    self._deal_damage_to_card(target, damage, card)
+                    excess = damage - target.effective_def
+                else:
+                    # Multiple blockers - player distributes damage
+                    # CR 807.3: Attacking player assigns damage to blockers
+                    damage_distribution = self.choice_manager.request_distribution(
+                        player=card.controller,
+                        source=card,
+                        total=damage,
+                        targets=self.battle.blockers,
+                        description=f"Assign {damage} combat damage from {card.data.name} to blockers",
+                        min_per=0,  # Can assign 0 to a blocker
+                    )
+
+                    # Apply distributed damage
+                    total_blocker_def = 0
+                    for blocker in self.battle.blockers:
+                        assigned = damage_distribution.get(blocker.uid, 0)
+                        if assigned > 0:
+                            logger.debug(f"{card.data.name} deals {assigned} damage to {blocker.data.name}")
+                            self._deal_damage_to_card(blocker, assigned, card)
+                        total_blocker_def += blocker.effective_def
+
+                    # Calculate excess for pierce
+                    excess = damage - total_blocker_def
 
                 # Pierce: excess damage to player
                 if card.has_keyword(Keyword.PIERCE):
-                    excess = damage - target.effective_def
                     if excess > 0:
                         self._deal_damage_to_player(
                             self.battle.defending_player, excess, card
@@ -1938,7 +2315,7 @@ class GameEngine:
 
     def _end_combat(self):
         """End the current combat"""
-        print(f"[DEBUG] _end_combat: clearing battle state", flush=True)
+        logger.debug(f"_end_combat: clearing battle state")
 
         # Handle Explode - destroy creatures that dealt damage with Explode
         attacker = self.battle.attacker
@@ -1953,7 +2330,7 @@ class GameEngine:
 
         self.emit(EventType.COMBAT_END, self.battle.attacking_player)
         self.battle.clear()
-        print(f"[DEBUG] _end_combat: in_battle is now {self.battle.in_battle}", flush=True)
+        logger.debug(f"_end_combat: in_battle is now {self.battle.in_battle}")
 
         # Run state-based actions (checks for lethal damage, 0 life, etc.)
         self.run_state_based_actions()

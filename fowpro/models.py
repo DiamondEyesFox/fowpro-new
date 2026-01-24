@@ -222,16 +222,48 @@ class TriggerCondition(Enum):
 # COST STRUCTURES
 # =============================================================================
 
-@dataclass
 class WillCost:
-    """Represents will/mana cost"""
-    light: int = 0
-    fire: int = 0
-    water: int = 0
-    wind: int = 0
-    darkness: int = 0
-    void: int = 0  # Generic/colorless
-    x: bool = False  # Has X in cost
+    """Represents will/mana cost.
+
+    Accepts both 'void' and 'generic' for colorless will (for compatibility).
+    """
+    __slots__ = ('light', 'fire', 'water', 'wind', 'darkness', 'void', 'x')
+
+    def __init__(self, light: int = 0, fire: int = 0, water: int = 0,
+                 wind: int = 0, darkness: int = 0, void: int = 0,
+                 x: bool = False, generic: int = 0):
+        """Initialize will cost. 'generic' is an alias for 'void'."""
+        self.light = light
+        self.fire = fire
+        self.water = water
+        self.wind = wind
+        self.darkness = darkness
+        self.void = void + generic  # Merge generic into void
+        self.x = x
+
+    @property
+    def generic(self) -> int:
+        """Alias for void (colorless/generic will)."""
+        return self.void
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, WillCost):
+            return NotImplemented
+        return (self.light == other.light and self.fire == other.fire and
+                self.water == other.water and self.wind == other.wind and
+                self.darkness == other.darkness and self.void == other.void and
+                self.x == other.x)
+
+    def __repr__(self) -> str:
+        parts = []
+        if self.light: parts.append(f"light={self.light}")
+        if self.fire: parts.append(f"fire={self.fire}")
+        if self.water: parts.append(f"water={self.water}")
+        if self.wind: parts.append(f"wind={self.wind}")
+        if self.darkness: parts.append(f"darkness={self.darkness}")
+        if self.void: parts.append(f"void={self.void}")
+        if self.x: parts.append("x=True")
+        return f"WillCost({', '.join(parts) if parts else ''})"
 
     @property
     def total(self) -> int:
@@ -243,7 +275,18 @@ class WillCost:
 
     @classmethod
     def parse(cls, cost_str: str) -> "WillCost":
-        """Parse cost string like '{W}{1}' or 'WW1'"""
+        """Parse cost string like '{W}{1}' or 'WW1'.
+
+        FoW attribute symbols:
+        - L/W = Light (W for MTG compatibility)
+        - R/F = Fire (F for Fire)
+        - U = Water (U like MTG's blUe)
+        - G/N = Wind (G for Green/MTG compat, N for wiNd)
+        - B/D = Darkness (B for Black/MTG compat, D for Darkness)
+        - M = Moon (special FoW attribute)
+        - X = Variable cost
+        - Numbers = Void/generic will
+        """
         cost = cls()
         if not cost_str:
             return cost
@@ -252,19 +295,19 @@ class WillCost:
         s = cost_str.replace("{", "").replace("}", "").replace(" ", "").upper()
 
         for char in s:
-            if char == 'W' or char == 'L':  # White/Light
+            if char == 'W' or char == 'L':  # Light (W for MTG White compat)
                 cost.light += 1
-            elif char == 'R' or char == 'F':  # Red/Fire
+            elif char == 'R' or char == 'F':  # Fire
                 cost.fire += 1
-            elif char == 'U' or char == 'B':  # blUe/Water (B can be darkness too)
-                if char == 'B':
-                    cost.darkness += 1
-                else:
-                    cost.water += 1
-            elif char == 'G' or char == 'N':  # Green/Wind
+            elif char == 'U':  # Water (U like MTG's blUe)
+                cost.water += 1
+            elif char == 'G' or char == 'N':  # Wind (G for MTG Green compat, N for wiNd)
                 cost.wind += 1
-            elif char == 'D':  # Darkness
+            elif char == 'B' or char == 'D':  # Darkness (B for MTG Black compat)
                 cost.darkness += 1
+            elif char == 'M':  # Moon (FoW special attribute)
+                # Moon will is treated as void for now (can pay any color)
+                cost.void += 1
             elif char == 'X':
                 cost.x = True
             elif char.isdigit():
@@ -503,6 +546,14 @@ class Card:
     granted_keywords: Keyword = Keyword.NONE
     removed_keywords: Keyword = Keyword.NONE
 
+    # Current stats (set by continuous effect layer system)
+    # These are recalculated each time continuous effects are applied
+    current_atk: int = 0
+    current_def: int = 0
+
+    # Granted abilities (text abilities, not keywords)
+    granted_abilities: list[str] = dataclass_field(default_factory=list)
+
     # Attached cards (additions, counters)
     attachments: list["Card"] = dataclass_field(default_factory=list)
     attached_to: Optional["Card"] = None
@@ -512,18 +563,45 @@ class Card:
 
     @property
     def effective_atk(self) -> int:
-        return max(0, self.data.atk + self.atk_mod)
+        # Use current_atk if set by layer system, otherwise calculate from base + mod
+        if self.current_atk > 0:
+            return max(0, self.current_atk)
+        return max(0, (self.data.atk or 0) + self.atk_mod)
 
     @property
     def effective_def(self) -> int:
-        return max(0, self.data.defense + self.def_mod)
+        # Use current_def if set by layer system, otherwise calculate from base + mod
+        if self.current_def > 0:
+            return max(0, self.current_def)
+        return max(0, (self.data.defense or 0) + self.def_mod)
 
     @property
     def effective_keywords(self) -> Keyword:
         return (self.data.keywords | self.granted_keywords) & ~self.removed_keywords
 
-    def has_keyword(self, kw: Keyword) -> bool:
-        return kw in self.effective_keywords
+    def has_keyword(self, kw) -> bool:
+        """
+        Check if card has a keyword ability.
+
+        Accepts both Keyword (models) and KeywordAbility (rules) enums
+        for compatibility between old and new systems.
+        """
+        effective = self.effective_keywords
+
+        # If it's our native Keyword type, direct check
+        if isinstance(kw, Keyword):
+            return kw in effective
+
+        # If it's KeywordAbility from rules module, convert by name
+        # This handles the dual-enum situation during migration
+        try:
+            kw_name = kw.name
+            if kw_name in Keyword.__members__:
+                return Keyword[kw_name] in effective
+        except (AttributeError, KeyError):
+            pass
+
+        return False
 
     def rest(self):
         self.is_rested = True
@@ -628,6 +706,27 @@ class PlayerState:
             case Zone.SIDEBOARD: return self.sideboard
             case Zone.STANDBY: return self.standby
             case _: return []
+
+    def get_all_cards(self) -> list[Card]:
+        """Get all cards this player owns across all zones.
+
+        Used by continuous effect system and other systems that need
+        to iterate over all of a player's cards.
+        """
+        all_cards = []
+        all_cards.extend(self.main_deck)
+        all_cards.extend(self.stone_deck)
+        all_cards.extend(self.hand)
+        all_cards.extend(self.field)
+        all_cards.extend(self.graveyard)
+        all_cards.extend(self.removed)
+        all_cards.extend(self.sideboard)
+        all_cards.extend(self.standby)
+        if self.ruler:
+            all_cards.append(self.ruler)
+        if self.j_ruler:
+            all_cards.append(self.j_ruler)
+        return all_cards
 
     def to_dict(self) -> dict:
         return {

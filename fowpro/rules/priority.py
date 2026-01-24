@@ -70,10 +70,10 @@ class ActionType(Enum):
     # Perform Judgment (main timing only)
     JUDGMENT = "judgment"
 
-    # Declare attack (battle phase only)
+    # Declare attack (main phase combat action in v1 engine)
     ATTACK = "attack"
 
-    # Declare block (battle phase only)
+    # Declare block (during combat in v1 engine)
     BLOCK = "block"
 
     # Pass priority
@@ -214,12 +214,13 @@ class PriorityManager:
 
         if action_type == ActionType.ATTACK:
             from ..engine import Phase
-            return (self.game.current_phase == Phase.BATTLE and
-                    self.game.turn_player == player)
+            return (self.game.current_phase == Phase.MAIN and
+                    self.game.turn_player == player and
+                    not self.game.battle.in_battle)
 
         if action_type == ActionType.BLOCK:
             from ..engine import Phase
-            return (self.game.current_phase == Phase.BATTLE and
+            return (self.game.current_phase == Phase.MAIN and
                     self.game.turn_player != player and
                     self.game.battle.in_battle)
 
@@ -246,10 +247,10 @@ class PriorityManager:
 
         # Battle actions
         from ..engine import Phase
-        if self.game.current_phase == Phase.BATTLE:
-            if self.game.turn_player == player:
+        if self.game.current_phase == Phase.MAIN:
+            if self.game.turn_player == player and not self.game.battle.in_battle:
                 actions.append(ActionType.ATTACK)
-            else:
+            elif self.game.turn_player != player and self.game.battle.in_battle:
                 actions.append(ActionType.BLOCK)
 
         return actions

@@ -10,9 +10,12 @@ References:
 - CR 1000+: Action by Rules
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Callable, Union, TYPE_CHECKING
 from enum import Enum
+
+logger = logging.getLogger(__name__)
 
 from .types import EffectAction, EffectDuration, KeywordAbility
 from .targeting import TargetRequirement, TargetFilter
@@ -128,28 +131,59 @@ class Effect:
         if action == EffectAction.DRAW:
             count = params.get('count', 1)
             target_player = params.get('player', player)
-            for _ in range(count):
-                game.draw_card(target_player)
+            # Convert string player references to player indices
+            if target_player == 'you' or target_player == 'self':
+                target_player = player
+            elif target_player == 'opponent':
+                target_player = 1 - player
+            elif not isinstance(target_player, int):
+                target_player = player  # Default fallback
+            game.draw_cards(target_player, count)
+            logger.debug(f"Effect: Drew {count} cards for player {target_player}")
             return True
 
         # Discard (CR 1019)
         if action == EffectAction.DISCARD:
             count = params.get('count', 1)
             target_player = params.get('player', player)
+            # Convert string player references
+            if target_player == 'you' or target_player == 'self':
+                target_player = player
+            elif target_player == 'opponent':
+                target_player = 1 - player
+            elif not isinstance(target_player, int):
+                target_player = player
             # Discard is handled by UI for random/choice
+            logger.debug(f"Effect: Discard {count} cards for player {target_player}")
             return True
 
         # Life effects
         if action == EffectAction.GAIN_LIFE:
             amount = params.get('amount', 0)
             target_player = params.get('player', player)
+            # Convert string player references
+            if target_player == 'you' or target_player == 'self':
+                target_player = player
+            elif target_player == 'opponent':
+                target_player = 1 - player
+            elif not isinstance(target_player, int):
+                target_player = player
             game.players[target_player].life += amount
+            logger.debug(f"Effect: Player {target_player} gained {amount} life")
             return True
 
         if action == EffectAction.LOSE_LIFE:
             amount = params.get('amount', 0)
             target_player = params.get('player', player)
+            # Convert string player references
+            if target_player == 'you' or target_player == 'self':
+                target_player = player
+            elif target_player == 'opponent':
+                target_player = 1 - player
+            elif not isinstance(target_player, int):
+                target_player = player
             game.players[target_player].life -= amount
+            logger.debug(f"Effect: Player {target_player} lost {amount} life")
             return True
 
         # Will production (CR 907)
@@ -339,10 +373,66 @@ class Effect:
 
         # Reveal cards
         if action == EffectAction.REVEAL:
-            # Mark cards as revealed (for UI purposes)
-            for target in targets:
-                target.is_revealed = True
-            return True
+            from ..engine import EventType
+            from_top = params.get('from_top', False)
+            deck_type = params.get('deck_type', 'main_deck')  # 'main_deck' or 'stone_deck'
+            count = params.get('count', 1)
+            condition_attr = params.get('condition_attribute')  # e.g., 'wind' for Gretel
+            move_if_condition = params.get('move_if_condition', False)
+            move_zone = params.get('move_zone', 'field')
+
+            if from_top:
+                # Reveal from top of a deck
+                p = game.players[player]
+                deck = getattr(p, deck_type, None)
+                if deck and len(deck) > 0:
+                    revealed_cards = deck[:count]
+                    for revealed_card in revealed_cards:
+                        revealed_card.is_revealed = True
+                        logger.info(f"Revealed {revealed_card.data.name} from {deck_type}")
+
+                        # Emit reveal event for UI (uses proper event system)
+                        game.emit(EventType.CARD_REVEALED, player, revealed_card,
+                                  source=source, deck_type=deck_type)
+
+                        # Check condition (e.g., "if it's a wind magic stone")
+                        if condition_attr and move_if_condition:
+                            card_attr = revealed_card.data.attribute if revealed_card.data else None
+                            # Check if card matches the required attribute
+                            matches = False
+                            if card_attr:
+                                if isinstance(condition_attr, str):
+                                    matches = condition_attr.lower() in str(card_attr).lower()
+                                else:
+                                    matches = card_attr == condition_attr
+
+                            if matches:
+                                # Remove from deck and put into field
+                                deck.remove(revealed_card)
+                                # Determine target zone
+                                target_zone = game.Zone.FIELD
+                                if move_zone == 'hand':
+                                    target_zone = game.Zone.HAND
+                                elif move_zone == 'graveyard':
+                                    target_zone = game.Zone.GRAVEYARD
+
+                                game.move_card(revealed_card, target_zone, player)
+                                logger.info(f"Moved {revealed_card.data.name} to {move_zone} (condition '{condition_attr}' met)")
+                            else:
+                                logger.info(f"{revealed_card.data.name} doesn't match condition '{condition_attr}' - stays in {deck_type}")
+                        elif not condition_attr:
+                            # No condition, just revealed
+                            logger.debug(f"Card revealed but no condition to check")
+                    return True
+                else:
+                    logger.info(f"No cards in {deck_type} to reveal")
+                    return True
+            else:
+                # Mark passed targets as revealed (for UI purposes)
+                for target in targets:
+                    target.is_revealed = True
+                    game.emit(EventType.CARD_REVEALED, player, target, source=source)
+                return True
 
         # Look at cards (private reveal)
         if action == EffectAction.LOOK:
@@ -372,6 +462,24 @@ class Effect:
 
         # Grant ability
         if action == EffectAction.GRANT_ABILITY:
+            # Handle move_addition: relocate an Addition to a different resonator
+            if params.get('move'):
+                if len(targets) >= 2:
+                    addition = targets[0]
+                    new_host = targets[1]
+                    # Detach from current host
+                    if hasattr(addition, 'attached_to') and addition.attached_to:
+                        old_host = addition.attached_to
+                        if hasattr(old_host, 'additions'):
+                            old_host.additions = [a for a in old_host.additions if a != addition]
+                    # Attach to new host
+                    addition.attached_to = new_host
+                    if not hasattr(new_host, 'additions'):
+                        new_host.additions = []
+                    new_host.additions.append(addition)
+                    logger.info(f"Moved addition {addition.data.name} to {new_host.data.name}")
+                return True
+
             ability_text = params.get('ability', '')
             for target in targets:
                 if not hasattr(target, 'granted_abilities'):
@@ -1536,11 +1644,33 @@ class EffectBuilder:
         )
 
     @staticmethod
-    def reveal_top() -> Effect:
-        """Reveal the top card of deck."""
+    def reveal_top(
+        deck_type: str = 'main_deck',
+        count: int = 1,
+        condition_attribute: str = None,
+        move_if_condition: bool = False,
+        move_zone: str = 'field'
+    ) -> Effect:
+        """
+        Reveal the top card(s) of a deck.
+
+        Args:
+            deck_type: 'main_deck' or 'stone_deck'
+            count: Number of cards to reveal
+            condition_attribute: If set, check card has this attribute (e.g., 'wind')
+            move_if_condition: If True and condition_attribute matches, move card
+            move_zone: Where to move if condition met ('field', 'hand', etc.)
+        """
         return Effect(
             action=EffectAction.REVEAL,
-            params={'from_top': True}
+            params={
+                'from_top': True,
+                'deck_type': deck_type,
+                'count': count,
+                'condition_attribute': condition_attribute,
+                'move_if_condition': move_if_condition,
+                'move_zone': move_zone,
+            }
         )
 
     @staticmethod

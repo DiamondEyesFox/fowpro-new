@@ -304,9 +304,9 @@ class CombatManager:
                 blocker_kw = kp._get_keywords(blocker)
                 blocker_is_fs = blocker_kw.has(Keyword.FIRST_STRIKE)
 
-                # Attacker damages blocker
-                if attacker_damage > 0 and blocker.current_def > 0:
-                    blocker.current_def -= attacker_damage
+                # Attacker damages blocker (accumulate in damage field, not current_def)
+                if attacker_damage > 0:
+                    blocker.damage += attacker_damage
 
                     self.game.trigger_manager.check_triggers(
                         TriggerEvent.DAMAGE_DEALT,
@@ -333,8 +333,8 @@ class CombatManager:
                 if (first_strike_only and blocker_is_fs) or \
                    (not first_strike_only and not blocker_is_fs):
                     blocker_damage = blocker.current_atk
-                    if blocker_damage > 0 and attacker.current_def > 0:
-                        attacker.current_def -= blocker_damage
+                    if blocker_damage > 0:
+                        attacker.damage += blocker_damage
 
                         self.game.trigger_manager.check_triggers(
                             TriggerEvent.DAMAGE_DEALT,
@@ -350,8 +350,8 @@ class CombatManager:
             elif attack.target:
                 # Attacking a J-Ruler/Resonator directly (Precision)
                 target = attack.target
-                if attacker_damage > 0 and target.current_def > 0:
-                    target.current_def -= attacker_damage
+                if attacker_damage > 0:
+                    target.damage += attacker_damage
 
                     self.game.trigger_manager.check_triggers(
                         TriggerEvent.DAMAGE_DEALT,
@@ -395,24 +395,33 @@ class CombatManager:
         from ..models import Zone
         kp = KeywordProcessor(self.game)
 
+        def check_lethal_damage(card):
+            """Check if card has accumulated lethal damage."""
+            if card is None:
+                return False
+            # Card is destroyed if accumulated damage >= effective defense
+            return card.damage >= card.effective_def
+
+        def destroy_if_lethal(card):
+            """Destroy card if it has lethal damage."""
+            if card is None or card.zone != Zone.FIELD:
+                return
+            if check_lethal_damage(card):
+                if kp.can_be_destroyed(card):
+                    # Use unified destroy path - move_card handles destruction
+                    self.game.move_card(card, Zone.GRAVEYARD)
+                    # on_destroyed is called by the engine's card movement system
+                    # via emit(CARD_DESTROYED) - don't call twice
+
         for attack in self.state.attacks:
             # Check attacker
-            if attack.attacker.current_def <= 0:
-                if kp.can_be_destroyed(attack.attacker):
-                    self.game.move_card(attack.attacker, Zone.GRAVEYARD)
-                    kp.on_destroyed(attack.attacker)
+            destroy_if_lethal(attack.attacker)
 
             # Check blocker
-            if attack.blocked_by and attack.blocked_by.current_def <= 0:
-                if kp.can_be_destroyed(attack.blocked_by):
-                    self.game.move_card(attack.blocked_by, Zone.GRAVEYARD)
-                    kp.on_destroyed(attack.blocked_by)
+            destroy_if_lethal(attack.blocked_by)
 
             # Check target
-            if attack.target and attack.target.current_def <= 0:
-                if kp.can_be_destroyed(attack.target):
-                    self.game.move_card(attack.target, Zone.GRAVEYARD)
-                    kp.on_destroyed(attack.target)
+            destroy_if_lethal(attack.target)
 
     def end_battle_phase(self):
         """End the battle phase"""

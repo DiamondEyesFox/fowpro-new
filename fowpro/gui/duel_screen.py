@@ -5,8 +5,12 @@ Professional duel interface with YGOPro-quality appearance.
 """
 
 import json
+import logging
+import os
 from pathlib import Path
 from typing import Optional, List
+
+logger = logging.getLogger(__name__)
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -1675,6 +1679,9 @@ class DuelScreen(QWidget):
         from ..engine import GameEngine, EventType
         from ..models import CardType
 
+        # Option to use v2 engine (YGOPro-style architecture)
+        use_v2_engine = getattr(self, 'use_v2_engine', False)
+
         # Load player deck
         if deck_path:
             p0_deck, p0_stones, p0_ruler = self._load_deck_from_path(db, deck_path)
@@ -1706,12 +1713,23 @@ class DuelScreen(QWidget):
         p1_deck = (resonators * 10)[:40] if resonators else []
         p1_stones = (stones * 5)[:10] if stones else []
 
-        # Create engine
-        self.engine = GameEngine(db)
+        # Create engine - v2 or v1
+        if use_v2_engine:
+            try:
+                from ..v2.client.adapter import create_v2_engine
+                self.engine = create_v2_engine(db)
+                self._log("Using v2 engine (YGOPro-style)", Colors.INFO)
+            except ImportError as e:
+                print(f"V2 engine not available: {e}, falling back to v1")
+                self.engine = GameEngine(db)
+        else:
+            self.engine = GameEngine(db)
+
         self.engine.subscribe(self._on_game_event)
 
-        # Enhance with CR-compliant rules engine
-        self._setup_rules_engine()
+        # Enhance with CR-compliant rules engine (v1 only)
+        if not use_v2_engine:
+            self._setup_rules_engine()
 
         # Setup and start
         self.engine.setup_game(p0_deck, p0_stones, p0_ruler, p1_deck, p1_stones, p1_ruler)
@@ -2006,7 +2024,7 @@ class DuelScreen(QWidget):
         try:
             # Update turn info
             phase_name = self.engine.current_phase.name
-            print(f"[DEBUG GUI] turn={self.engine.turn_number}, player={self.engine.turn_player}, phase={phase_name}", flush=True)
+            print(f"[DEBUG GUI] turn={self.engine.turn_number}, player={self.engine.turn_player}, phase={phase_name}")
 
             self.turn_label.setText(f"Turn {self.engine.turn_number}")
             self.phase_label.setText(phase_name.upper())
@@ -2032,7 +2050,7 @@ class DuelScreen(QWidget):
                 self.phase_label.setStyleSheet(f"color: {Colors.ACCENT}; background: transparent; font-size: 14px; font-weight: bold;")
 
         except Exception as e:
-            print(f"[DEBUG GUI] ERROR in _update_display: {e}", flush=True)
+            print(f"[DEBUG GUI] ERROR in _update_display: {e}")
             import traceback
             traceback.print_exc()
 
@@ -2282,7 +2300,7 @@ class DuelScreen(QWidget):
     def _log(self, message: str, color: str = None):
         """Add message to game log"""
         # Also print to file log
-        print(f"[GAME] {message}", flush=True)
+        print(f"[GAME] {message}")
         if color:
             self.game_log.append(f'<span style="color: {color}">{message}</span>')
         else:
@@ -2308,7 +2326,7 @@ class DuelScreen(QWidget):
             return
 
         self._log(f"Clicked: {card.data.name} in {zone}", Colors.TEXT_SECONDARY)
-        print(f"[DEBUG] Card clicked: {card.data.name} in {zone}, is_stone={card.data.is_stone()}, is_resonator={card.data.is_resonator()}", flush=True)
+        logger.debug(f"Card clicked: {card.data.name} in {zone}, is_stone={card.data.is_stone()}, is_resonator={card.data.is_resonator()}")
 
         # Try actions based on zone
         if zone == "hand":
@@ -2348,7 +2366,9 @@ class DuelScreen(QWidget):
                     # Can only attack
                     self._try_attack(card)
                 else:
-                    self._log(f"{card.data.name} has summoning sickness", Colors.WARNING)
+                    # Show specific reason why attack failed
+                    _, reason = self._check_attack_conditions(card)
+                    self._log(reason or f"Cannot take action with {card.data.name}", Colors.WARNING)
             else:
                 self._log(f"No action for {card.data.card_type.value}", Colors.TEXT_MUTED)
         elif zone == "ruler":
@@ -2488,7 +2508,7 @@ class DuelScreen(QWidget):
                 menu.exec(pos)
 
         except Exception as e:
-            print(f"[ERROR] Context menu failed: {e}", flush=True)
+            print(f"[ERROR] Context menu failed: {e}")
             import traceback
             traceback.print_exc()
 
@@ -2999,25 +3019,30 @@ class DuelScreen(QWidget):
 
     def _can_creature_attack(self, card) -> bool:
         """Check if a creature can attack (without side effects)"""
+        can_attack, _ = self._check_attack_conditions(card)
+        return can_attack
+
+    def _check_attack_conditions(self, card) -> tuple:
+        """Check attack conditions and return (can_attack, reason_if_no)"""
         from ..models import Keyword
 
         if self.engine.current_phase.name != "MAIN":
-            return False
+            return False, f"Can only attack during Main phase (current: {self.engine.current_phase.name})"
         if self.engine.turn_player != self.human_player:
-            return False
+            return False, "Not your turn"
         if self.engine.priority_player != self.human_player:
-            return False
+            return False, "You don't have priority (pass priority or wait)"
         if self.engine.chase:  # Can't attack while chase has items
-            return False
+            return False, "Can't attack while chase has items - resolve the chase first"
         if self.engine.battle.in_battle:  # Can't start new attack during battle
-            return False
+            return False, "Already in battle"
         if card.is_rested:
-            return False
+            return False, f"{card.data.name} is rested and cannot attack"
         # Check summoning sickness
         if card.entered_turn == self.engine.turn_number:
             if not card.has_keyword(Keyword.SWIFTNESS):
-                return False
-        return True
+                return False, f"{card.data.name} has summoning sickness"
+        return True, None
 
     def _show_mana_attack_picker(self, card, will_colors):
         """Show picker for mana dorks that can both produce will and attack"""
@@ -3123,7 +3148,7 @@ class DuelScreen(QWidget):
         """Try to attack with a card - attacks happen during Main phase"""
         from ..models import Keyword
 
-        print(f"[DEBUG] _try_attack: {card.data.name}, phase={self.engine.current_phase.name}, rested={card.is_rested}", flush=True)
+        logger.debug(f"_try_attack: {card.data.name}, phase={self.engine.current_phase.name}, rested={card.is_rested}")
 
         if self.engine.current_phase.name != "MAIN":
             self._log(f"Can only attack during Main phase (current: {self.engine.current_phase.name})", Colors.WARNING)
@@ -3144,7 +3169,7 @@ class DuelScreen(QWidget):
             self._log("Cannot attack while chase has items", Colors.WARNING)
             return
 
-        print(f"[DEBUG] _try_attack: calling declare_attack", flush=True)
+        logger.debug(f"_try_attack: calling declare_attack")
         if self.engine.declare_attack(self.human_player, card, target_player=1 - self.human_player):
             self._log(f"{card.data.name} attacks!", Colors.ERROR)
         else:

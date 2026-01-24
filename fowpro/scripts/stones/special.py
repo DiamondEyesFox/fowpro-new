@@ -5,8 +5,11 @@ Special Magic Stone Scripts
 Complex magic stones with unique abilities.
 """
 
+import logging
 from typing import List, Set, TYPE_CHECKING
 from .. import CardScript, ScriptRegistry, Effect, EffectType, EffectTiming, EffectCategory
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ...engine import GameEngine
@@ -123,19 +126,37 @@ class LittleRedThePureStone(CardScript):
 
     def on_enter_field(self, game: 'GameEngine', card: 'Card'):
         """When entering field, player chooses an attribute"""
-        print(f"[DEBUG] Little Red on_enter_field START: card.uid={card.uid}", flush=True)
+        logger.debug(f"Little Red on_enter_field START: card.uid={card.uid}")
         try:
             from ...models import Attribute
 
-            print(f"[DEBUG] Little Red: checking _chosen_attribute dict", flush=True)
+            logger.debug(f"Little Red: checking _chosen_attribute dict")
             # For now, default to the first available - GUI should prompt
             # Store choice keyed by card UID
             if card.uid not in self._chosen_attribute:
-                # Default choice - should be prompted in GUI
-                self._chosen_attribute[card.uid] = Attribute.LIGHT
-            print(f"[DEBUG] Little Red on_enter_field: set attribute to {self._chosen_attribute[card.uid]}", flush=True)
+                # Prefer UI prompt via rules engine if available
+                chosen = None
+                if hasattr(game, "_rules_engine") and game._rules_engine:
+                    try:
+                        attr_name = game._rules_engine.request_attribute(
+                            card.controller,
+                            card,
+                            options=["Light", "Fire", "Water", "Wind", "Darkness"],
+                            prompt="Choose an attribute for Little Red"
+                        )
+                        if attr_name:
+                            chosen = Attribute[attr_name.upper()]
+                    except Exception:
+                        chosen = None
+
+                # Fallback default
+                if chosen is None:
+                    chosen = Attribute.LIGHT
+
+                self._chosen_attribute[card.uid] = chosen
+            logger.debug(f"Little Red on_enter_field: set attribute to {self._chosen_attribute[card.uid]}")
         except Exception as e:
-            print(f"[DEBUG] Little Red on_enter_field CRASH: {e}", flush=True)
+            logger.debug(f"Little Red on_enter_field CRASH: {e}")
             import traceback
             traceback.print_exc()
 

@@ -19,10 +19,13 @@ NEW: Now supports CR (Comprehensive Rules) based ability system via rules_bridge
 - See fowpro/rules/ for CR-based type definitions
 """
 
+import logging
 from abc import ABC
 from dataclasses import dataclass, field
 from typing import Callable, Optional, List, Any, TYPE_CHECKING
 from enum import Enum, auto
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..engine import GameEngine
@@ -126,6 +129,53 @@ class Effect:
 
     # Internal tracking
     _activated_this_turn: bool = field(default=False, repr=False)
+
+
+# =============================================================================
+# SIMPLE ACTIVATED ABILITY (legacy convenience for stone scripts)
+# =============================================================================
+
+@dataclass
+class ActivatedAbility:
+    """
+    Lightweight activated ability used by some legacy scripts.
+
+    This is a convenience wrapper (not CR-compliant) that exposes
+    fields the engine expects (tap_cost, will_cost, operation, etc.).
+    """
+    name: str = ""
+    cost_text: str = ""
+    effect_text: str = ""
+    requires_rest: bool = False
+    requires_target: bool = False
+    target_filter: str = ""
+    requires_choice: bool = False
+    choice_type: str = ""
+    operation: Optional[Callable] = None
+
+    # Engine-facing compatibility fields
+    will_cost: Optional['WillCost'] = None
+    tap_cost: bool = False
+    additional_cost: Optional[Callable] = None
+    uses_chase: bool = True
+    once_per_turn: bool = False
+    _activated_this_turn: bool = field(default=False, repr=False)
+
+    @property
+    def description(self) -> str:
+        return self.effect_text or self.name
+
+    def can_activate(self, game: 'GameEngine', card: 'Card') -> bool:
+        """Basic activation check for legacy abilities."""
+        if self.tap_cost and card.is_rested:
+            return False
+        if self.will_cost and not game.players[card.controller].will_pool.can_pay(self.will_cost):
+            return False
+        return True
+
+    def __post_init__(self):
+        # Mirror requires_rest to tap_cost for engine compatibility
+        self.tap_cost = self.requires_rest or self.tap_cost
 
 
 # =============================================================================
@@ -265,21 +315,21 @@ class ScriptRegistry:
     @classmethod
     def get(cls, card_code: str) -> CardScript:
         """Get a script instance for a card code"""
-        print(f"[DEBUG] ScriptRegistry.get({card_code})", flush=True)
+        logger.debug(f"ScriptRegistry.get({card_code})")
         # Check cache
         if card_code in cls._instances:
-            print(f"[DEBUG] ScriptRegistry: returning cached {cls._instances[card_code].__class__.__name__}", flush=True)
+            logger.debug(f"ScriptRegistry: returning cached {cls._instances[card_code].__class__.__name__}")
             return cls._instances[card_code]
 
         # Create new instance
         if card_code in cls._scripts:
-            print(f"[DEBUG] ScriptRegistry: creating new {cls._scripts[card_code].__name__}", flush=True)
+            logger.debug(f"ScriptRegistry: creating new {cls._scripts[card_code].__name__}")
             instance = cls._scripts[card_code](card_code)
         elif cls._default_script_class:
-            print(f"[DEBUG] ScriptRegistry: using default script", flush=True)
+            logger.debug(f"ScriptRegistry: using default script")
             instance = cls._default_script_class(card_code)
         else:
-            print(f"[DEBUG] ScriptRegistry: using base CardScript", flush=True)
+            logger.debug(f"ScriptRegistry: using base CardScript")
             instance = CardScript(card_code)
 
         cls._instances[card_code] = instance

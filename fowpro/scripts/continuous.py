@@ -269,6 +269,48 @@ class ContinuousEffectManager:
                     return card
         return None
 
+    # =========================================================================
+    # CONVENIENCE HELPERS FOR "UNTIL END OF TURN" EFFECTS
+    # =========================================================================
+
+    def register_until_eot_keyword(self, target: 'Card', keyword: Keyword):
+        """Grant a keyword to a card until end of turn.
+
+        Creates a continuous effect that will be automatically removed
+        when remove_end_of_turn_effects() is called.
+        """
+        effect = ContinuousEffect(
+            source_id=target.uid,  # Source is target itself (self-applied)
+            name=f"Grant {keyword.name} until EOT",
+            layer=EffectLayer.ABILITY,
+            duration=EffectDuration.UNTIL_END_OF_TURN,
+            affected_filter=AffectedCardFilter(
+                custom=lambda card: card.uid == target.uid
+            ),
+            effect_values={'grant_keywords': keyword},
+            affects_self=True,
+        )
+        self.register_effect(effect)
+
+    def register_until_eot_stat_mod(self, target: 'Card', atk_mod: int, def_mod: int):
+        """Apply a stat modification to a card until end of turn.
+
+        Creates a continuous effect that will be automatically removed
+        when remove_end_of_turn_effects() is called.
+        """
+        effect = ContinuousEffect(
+            source_id=target.uid,  # Source is target itself (self-applied)
+            name=f"Grant +{atk_mod}/+{def_mod} until EOT",
+            layer=EffectLayer.STAT_MODIFY,
+            duration=EffectDuration.UNTIL_END_OF_TURN,
+            affected_filter=AffectedCardFilter(
+                custom=lambda card: card.uid == target.uid
+            ),
+            effect_values={'atk_mod': atk_mod, 'def_mod': def_mod},
+            affects_self=True,
+        )
+        self.register_effect(effect)
+
 
 # =============================================================================
 # CONTINUOUS EFFECT BUILDERS

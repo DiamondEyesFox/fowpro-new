@@ -75,9 +75,17 @@ class DuetOfLight(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: REMOVE_FROM_GAME
-        # Remove target resonator from the game.
+        # Spell effect
+        effects = [
+            EffectBuilder.remove_from_game(),
+        ]
+        self.register_spell_effect(effects)
+
+        # Spell effect
+        effects = [
+            EffectBuilder.rest(),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -185,8 +193,7 @@ class PandorasBoxOfHope(RulesCardScript):
         ))
 
         # [Continuous] ability
-        # Continuous effect with: REMOVE_FROM_GAME
-        # At the beginning of your main phase, remove the top card of your main 
+        effects = [EffectBuilder.remove_from_game()]
 
 
 
@@ -228,9 +235,11 @@ class TemporalSpellOfMillennia(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: REMOVE_FROM_GAME
-        # Remove target Cthulhu resonator from the game.
+        # Spell effect
+        effects = [
+            EffectBuilder.remove_from_game(),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -331,7 +340,7 @@ class BlazerTheAwakener(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Whenever a resonator that was dealt dama",
             trigger_condition=TriggerCondition.RECOVERED,
-            effects=[],
+            effects=[EffectBuilder.recover()],
             is_mandatory=True,
         ))
 
@@ -358,8 +367,10 @@ class CthughaTheLivingFlame(RulesCardScript):
         ))
 
         # [Continuous] ability
-        # Continuous effect with: BANISH
-        # Incarnation{R} (You may banish one fire resonator rather than pay this
+        effects = [
+            EffectBuilder.banish(),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -403,9 +414,12 @@ class FetalMovementInOuterWorld(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: DEAL_DAMAGE, DEAL_DAMAGE, REMOVE_FROM_GAME
-        # Remove all cards in target player\'s graveyard from the game. This card
+        # Spell effect
+        effects = [
+            EffectBuilder.deal_damage(100),
+            EffectBuilder.remove_from_game(),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -427,9 +441,11 @@ class Ghostflame(RulesCardScript):
             effects=[EffectBuilder.return_from_graveyard()],
         ))
 
-        # [Continuous] ability
-        # Continuous effect with: DEAL_DAMAGE, DEAL_DAMAGE
-        # This card deals 300 damage to target player or resonator.
+        # Spell effect
+        effects = [
+            EffectBuilder.deal_damage(300),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -449,8 +465,11 @@ class LittleRedTheHopeOfMillennia(RulesCardScript):
         # Enhanced effect triggers when awakening cost is paid
 
         # [Continuous] ability
-        # Continuous effect with: DEAL_DAMAGE, DEAL_DAMAGE, DISCARD
-        # {Rest} , discard a card with \"Apple\" in its name: This card deals 1000
+        effects = [
+            EffectBuilder.deal_damage(1000),
+            EffectBuilder.discard(1),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -488,7 +507,7 @@ class MilestTheInvisibleGhostlyFlame(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Remove a knowledge counter from this car",
-            effects=[EffectBuilder.deal_damage(300), EffectBuilder.deal_damage(300)],
+            effects=[EffectBuilder.deal_damage(300)],
         ))
 
 
@@ -576,9 +595,12 @@ class AlicesPursuit(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: DRAW, RETURN_TO_HAND
-        # Return target resonator your opponent controls with total cost 5 or mo
+        # Spell effect
+        effects = [
+            EffectBuilder.draw(1),
+            EffectBuilder.return_to_hand(),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -589,6 +611,12 @@ class AlicesSoldier(RulesCardScript):
     Alice's Soldier
     This card cannot be targeted by spells or abilities.
     """
+
+    def initial_effect(self, game, card):
+        """Register abilities when card is created."""
+        # [Continuous] ability
+        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+
 
     def get_keywords(self) -> KeywordAbility:
         return KeywordAbility.BARRIER
@@ -624,11 +652,11 @@ class HouseOfTheOldMan(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_continuous_effect(ContinuousEffect(
-            name="Magic stones you control gain \" Activate",
-            affects_self_only=False,
-            # Group buff - affects other cards you control
-        ))
+        effects = [
+            EffectBuilder.grant_ability(),
+            EffectBuilder.produce_will_any(),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
 
@@ -655,7 +683,7 @@ class LunyaTheLiarGirl(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Whenever a resonator is put into a grave",
             trigger_condition=TriggerCondition.RECOVERED,
-            effects=[],
+            effects=[EffectBuilder.recover()],
             is_mandatory=True,
         ))
 
@@ -711,9 +739,12 @@ class MoonIncarnation(RulesCardScript):
         self.awakening_cost = AwakeningCost(generic=2)
         # Enhanced effect triggers when awakening cost is paid
 
-        # [Continuous] ability
-        # Continuous effect with: RETURN_TO_HAND, SEARCH
-        # Search your main deck for a Moon addition, reveal it and put it into y
+        # Spell effect
+        effects = [
+            EffectBuilder.return_from_graveyard(),
+            EffectBuilder.search(destination="hand"),
+        ]
+        self.register_spell_effect(effects)
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -749,8 +780,14 @@ class PurplemistTheFantasyDragon(RulesCardScript):
     Flying (This card cannot be blocked by J/resonators without Flying .)
     """
 
+    def initial_effect(self, game, card):
+        """Register abilities when card is created."""
+        # [Continuous] ability
+        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+
+
     def get_keywords(self) -> KeywordAbility:
-        return KeywordAbility.FLYING | KeywordAbility.BARRIER | KeywordAbility.UNBLOCKABLE
+        return KeywordAbility.FLYING | KeywordAbility.BARRIER
 
 
 
@@ -764,8 +801,11 @@ class TransparentMoon(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        # Continuous effect with: REMOVE_ABILITY
-        # Magic stones with non-will activate abilities don\'t recover during rec
+        effects = [
+            EffectBuilder.recover(),
+            EffectBuilder.prevent_recovery(),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
 
@@ -805,6 +845,9 @@ class ChristieTheWardenOfSanctuary(RulesCardScript):
             tap_cost=True,
             effects=[EffectBuilder.draw(2), EffectBuilder.gain_life(500)],
         ))
+
+        # [Continuous] ability
+        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -888,8 +931,10 @@ class LeavesOfYggdrasil(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        # Continuous effect with: PUT_INTO_FIELD
-        # When added resonator is put into a graveyard from a field, put that re
+        effects = [
+            EffectBuilder.put_on_added_death(),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
 
@@ -903,9 +948,14 @@ class LiberateTheWorld(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: RETURN_TO_HAND, REMOVE_FROM_GAME
-        # Look at the top three cards of your main deck. Put one of them into yo
+        # Spell effect
+        effects = [
+            EffectBuilder.return_from_graveyard(),
+            EffectBuilder.remove_from_game(),
+            EffectBuilder.rest(),
+            EffectBuilder.look(3),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -939,8 +989,10 @@ class RefarthTheWindCastle(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        # Continuous effect with: PREVENT_DAMAGE
-        # Prevent all damage that would be dealt by normal spells to resonators 
+        effects = [
+            EffectBuilder.prevent_all_damage(),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
 
@@ -986,9 +1038,11 @@ class WindOfGods(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: PUT_ON_TOP_OF_DECK
-        # Put target fire or darkness resonator on top of its owner\'s main deck.
+        # Spell effect
+        effects = [
+            EffectBuilder.put_on_top_of_deck(),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -1043,9 +1097,11 @@ class DarkPulse(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: DESTROY
-        # Destroy all resonators with total cost 2 or less.
+        # Spell effect
+        effects = [
+            EffectBuilder.destroy(),
+        ]
+        self.register_spell_effect(effects)
 
 
 
@@ -1072,8 +1128,7 @@ class EibonTheMage(RulesCardScript):
         ))
 
         # [Continuous] ability
-        # Continuous effect with: RETURN_TO_HAND, SEARCH
-        # Awakening{B} : Enter : Search your main deck for a card named \" Book o
+        effects = [EffectBuilder.search(destination="hand")]
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1128,8 +1183,13 @@ class HazzardTheDarkForestAugur(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        # Continuous effect with: DEAL_DAMAGE, DEAL_DAMAGE
-        # At the beginning of your main phase, this card deals 200 damage to tar
+        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+
+        # [Continuous] ability
+        effects = [
+            EffectBuilder.deal_damage(200),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1200,8 +1260,10 @@ class NyarlathotepTheUsurper(RulesCardScript):
         ))
 
         # [Continuous] ability
-        # Continuous effect with: BANISH
-        # Incarnation{B} ,{B} or{R} (You may banish one darkness resonator and o
+        effects = [
+            EffectBuilder.banish(),
+        ]
+        self.register_continuous_effect_with_effects(effects)
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1218,9 +1280,11 @@ class RitualOfMillennia(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        # Continuous effect with: PUT_INTO_FIELD
-        # Choose target resonator from a graveyard that was put into that zone f
+        # Spell effect
+        effects = [
+            EffectBuilder.put_into_field(from_zone="graveyard", this_turn=True),
+        ]
+        self.register_spell_effect(effects)
 
 
 

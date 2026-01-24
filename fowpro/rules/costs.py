@@ -110,6 +110,17 @@ class WillCost:
         """
         Parse a cost string like '{2}{R}{R}' or '1RR' into WillCost.
 
+        FoW attribute symbols:
+        - L/W = Light (W for MTG compatibility)
+        - R/F = Fire (F for Fire)
+        - U = Water (U like MTG's blUe)
+        - G/N = Wind (G for Green/MTG compat, N for wiNd)
+        - B/D = Darkness (B for Black/MTG compat, D for Darkness)
+        - M = Moon (special FoW attribute)
+        - V = Void (explicit)
+        - X = Variable cost
+        - Numbers = Void/generic will
+
         Supports formats:
         - {X} notation: {1}{R}{R}
         - Compact notation: 1RR
@@ -134,15 +145,15 @@ class WillCost:
                     i += 1
                     num_str += s[i]
                 cost.void += int(num_str)
-            elif c == 'W' or c == 'L':  # White/Light
+            elif c == 'W' or c == 'L':  # Light (W for MTG White compat)
                 cost.light += 1
-            elif c == 'R' or c == 'F':  # Red/Fire
+            elif c == 'R' or c == 'F':  # Fire
                 cost.fire += 1
-            elif c == 'U' or c == 'B':  # Blue/Water
+            elif c == 'U':  # Water (U like MTG's blUe)
                 cost.water += 1
-            elif c == 'G':  # Green/Wind
+            elif c == 'G' or c == 'N':  # Wind (G for MTG Green compat, N for wiNd)
                 cost.wind += 1
-            elif c == 'K' or c == 'D':  # Black/Darkness
+            elif c == 'B' or c == 'D':  # Darkness (B for MTG Black compat)
                 cost.darkness += 1
             elif c == 'M':  # Moon
                 cost.moon += 1
@@ -155,9 +166,25 @@ class WillCost:
 
         return cost
 
-    def can_pay(self, will_pool: Dict[str, int]) -> bool:
-        """Check if this cost can be paid from a will pool."""
-        # Calculate available colored will
+    def can_pay(self, will_pool: Dict[str, int], any_will_pays_colored: bool = False) -> bool:
+        """Check if this cost can be paid from a will pool.
+
+        Args:
+            will_pool: Dictionary of available will by color
+            any_will_pays_colored: If True, any will can pay colored costs
+                (used by Grimm and similar effects)
+        """
+        # Calculate total available will
+        total_available = sum(will_pool.get(color, 0) for color in
+                             ['light', 'fire', 'water', 'wind', 'darkness', 'moon', 'void'])
+
+        if any_will_pays_colored:
+            # Any will can pay any cost - just check total
+            total_cost = (self.light + self.fire + self.water + self.wind +
+                         self.darkness + self.moon + self.void)
+            return total_available >= total_cost
+
+        # Normal payment - colored will must pay colored costs
         available = {
             'light': will_pool.get('light', 0),
             'fire': will_pool.get('fire', 0),

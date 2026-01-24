@@ -17,6 +17,8 @@ if TYPE_CHECKING:
     from ..engine import GameEngine
     from ..models import Card
 
+from ..engine import EventType
+
 # Import all rule systems
 from .priority import PriorityManager, ActionType, PriorityState
 from .costs import CostManager, WillCost, CostPaymentPlan
@@ -348,7 +350,7 @@ class RulesEngine:
         elif card.data.card_type in [CardType.ADDITION_FIELD, CardType.REGALIA]:
             self.game._play_addition(player, card, targets)
 
-        self.game.emit(self.game.EventType.CARD_PLAYED, player, card)
+        self.game.emit(EventType.CARD_PLAYED, player, card)
         return True
 
     def _can_play_timing(self, player: int, card: 'Card') -> bool:
@@ -404,7 +406,7 @@ class RulesEngine:
         if isinstance(target, Card):
             target.damage += final_amount
             self.game.emit(
-                self.game.EventType.DAMAGE_DEALT,
+                EventType.DAMAGE_DEALT,
                 source.controller,
                 source,
                 target=target,
@@ -418,7 +420,7 @@ class RulesEngine:
             player_idx = target
             self.game.players[player_idx].life -= final_amount
             self.game.emit(
-                self.game.EventType.PLAYER_DAMAGED,
+                EventType.PLAYER_DAMAGED,
                 player_idx,
                 source,
                 amount=final_amount

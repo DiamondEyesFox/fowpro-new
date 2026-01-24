@@ -875,6 +875,8 @@ class CRScriptGenerator:
 
         # ====== GRANT_ABILITY (complex) ======
         elif action == EffectAction.GRANT_ABILITY:
+            if params.get('move'):
+                return 'EffectBuilder.move_addition()'
             if params.get('call_stone'):
                 return 'EffectBuilder.call_magic_stone()'
             if params.get('force_attack'):

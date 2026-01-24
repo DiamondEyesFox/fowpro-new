@@ -390,7 +390,10 @@ class LayerManager:
         # Layer 7a: CDA stats
         elif layer == Layer.STAT_CDA:
             # Characteristic-defining abilities set base stats
-            pass  # Handled by card data
+            if effect.set_atk is not None:
+                card.current_atk = effect.set_atk
+            if effect.set_def is not None:
+                card.current_def = effect.set_def
 
         # Layer 7b: Set stats
         elif layer == Layer.STAT_SET:

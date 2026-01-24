@@ -11,9 +11,12 @@ References:
 - CR 906.9: State triggers (intervening-if)
 """
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, List, Optional, Dict, Callable, Any, Tuple
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from ..engine import GameEngine
@@ -119,6 +122,11 @@ class TriggeredAbility:
     # For delayed triggers - when to trigger
     delayed_until: Optional[str] = None  # "end_of_turn", "next_upkeep", etc.
 
+    # Whether this trigger only fires when the source card itself triggers
+    # the event (e.g., "[Enter]" only triggers when THIS card enters)
+    # Default True for self-referential triggers like [Enter]
+    triggers_on_self: bool = True
+
     def can_trigger(self, game: 'GameEngine', source: 'Card',
                     event_type: TriggerCondition, event_data: Dict) -> bool:
         """
@@ -129,6 +137,14 @@ class TriggeredAbility:
         # Check trigger type
         if event_type != self.trigger_condition:
             return False
+
+        # For self-only triggers, check if the event card is this card
+        # This is critical for [Enter] abilities - they only fire when
+        # THIS specific card enters, not when ANY card enters
+        if self.triggers_on_self:
+            event_card = event_data.get('card') or event_data.get('source')
+            if event_card is None or event_card.uid != source.uid:
+                return False
 
         # Check once per turn
         if self.once_per_turn and self.used_this_turn:
@@ -288,22 +304,44 @@ class APNAPTriggerManager:
         self.pending = []
 
         from ..models import ChaseItem
+        import uuid
 
         for instance in ordered:
+            targets = []
+            ability = instance.ability
+
+            # If this trigger requires targets, select them now (on chase entry)
+            if ability.targets and self.game._rules_engine:
+                targets = self.game._rules_engine.request_targets(
+                    instance.controller,
+                    instance.source,
+                    ability.targets,
+                    prompt=f"{ability.name} - Choose target",
+                )
+
+                # If required targets are not available, do not add to chase
+                if not targets:
+                    if any(not req.validate_count(0) for req in ability.targets):
+                        logger.debug(f"Trigger skipped - no valid targets for {ability.name}")
+                        continue
+
             # For intervening-if, mark that we need to check condition again
-            if instance.ability.trigger_type == TriggerType.INTERVENING_IF:
+            if ability.trigger_type == TriggerType.INTERVENING_IF:
                 instance.intervening_checked = False
 
             item = ChaseItem(
+                uid=f"trigger_{uuid.uuid4().hex[:8]}",
                 source=instance.source,
                 controller=instance.controller,
                 item_type="TRIGGER",
+                targets=targets,
                 effect_data={
-                    'ability': instance.ability,
+                    'ability': ability,
                     'event_data': instance.event_data,
-                    'trigger_name': instance.ability.name,
-                    'operation': instance.ability.operation,
+                    'trigger_name': ability.name,
+                    'operation': ability.operation,
                     'intervening_checked': instance.intervening_checked,
+                    'targets': targets,
                 },
             )
             self.game.add_to_chase(item)
@@ -319,32 +357,69 @@ class APNAPTriggerManager:
         ability = item.effect_data.get('ability')
         event_data = item.effect_data.get('event_data', {})
         source = item.source
+        controller = item.controller
+        targets = item.targets or item.effect_data.get('targets', [])
 
         if not ability:
             return False
 
         # Check intervening-if condition
-        if ability.trigger_type == TriggerType.INTERVENING_IF:
+        if hasattr(ability, 'trigger_type') and ability.trigger_type == TriggerType.INTERVENING_IF:
             if not ability.check_on_resolution(self.game, source):
                 # Condition no longer true - fizzle
                 return False
 
-        # Check targets are still valid
-        # TODO: Implement target validation
+        # Validate targets are still legal
+        if ability.targets and targets:
+            valid_targets = []
+            for target in targets:
+                if not hasattr(target, 'uid'):
+                    # Non-card targets (players) are always valid
+                    valid_targets.append(target)
+                    continue
 
-        # Execute the operation
-        if ability.operation:
+                # Target must match at least one requirement filter
+                if any(
+                    self.game.is_valid_target(source, target, controller, req.filter)
+                    for req in ability.targets
+                ):
+                    valid_targets.append(target)
+
+            if not valid_targets and any(not req.validate_count(0) for req in ability.targets):
+                logger.debug(f"Trigger fizzled - all targets invalid for {ability.name}")
+                return False
+
+            targets = valid_targets
+
+        # Try different resolution methods based on ability type
+        resolved = False
+
+        # First, try the ability's resolve() method (for AutomaticAbility with effects list)
+        if hasattr(ability, 'resolve') and hasattr(ability, 'effects') and ability.effects:
+            try:
+                ability.resolve(self.game, source, controller, targets, event_data)
+                resolved = True
+            except Exception as e:
+                logger.exception(f"Trigger resolution via resolve() failed: {e}")
+                resolved = False
+
+        # Fall back to operation (for legacy TriggeredAbility with operation callback)
+        if not resolved and ability.operation:
             try:
                 ability.operation(self.game, source, event_data)
+                resolved = True
             except Exception as e:
-                print(f"[ERROR] Trigger resolution failed: {e}")
+                logger.exception(f"Trigger resolution via operation() failed: {e}")
                 return False
+
+        if not resolved:
+            logger.warning(f"Trigger {ability.name} has no effects or operation to execute")
 
         # Mark as used for once-per-turn
         if ability.once_per_turn:
             ability.used_this_turn = True
 
-        return True
+        return resolved
 
     def reset_turn(self):
         """Reset per-turn trigger state."""

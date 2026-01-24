@@ -11,9 +11,12 @@ References:
 - CR 907: Will Abilities
 """
 
+import logging
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Callable, TYPE_CHECKING
 from abc import ABC, abstractmethod
+
+logger = logging.getLogger(__name__)
 
 from .types import (
     AbilityType, EffectTiming, TriggerCondition, TriggerTiming,
@@ -127,8 +130,13 @@ class ActivateAbility(Ability):
             from ..engine import Phase
             if game.current_phase != Phase.MAIN:
                 return False
-            if game.in_battle:
-                return False
+            # v1 engine uses game.battle.in_battle, not game.in_battle
+            if hasattr(game, "in_battle"):
+                if game.in_battle:
+                    return False
+            else:
+                if hasattr(game, "battle") and game.battle.in_battle:
+                    return False
             if game.chase:
                 return False
 
@@ -204,6 +212,11 @@ class ActivateAbility(Ability):
             self.used_this_turn = True
 
         # Execute effects
+        if not self.effects:
+            logger.warning(
+                f"ActivateAbility '{self.name}' on {card.data.name} has no effects to execute. "
+                f"This ability may need manual implementation in its script."
+            )
         for effect in self.effects:
             effect.execute(game, card, targets, player)
 
@@ -243,6 +256,11 @@ class AutomaticAbility(Ability):
     # Tracks trigger count (CR 906.4)
     trigger_count: int = 0
 
+    # Whether this trigger only fires when the source card itself triggers
+    # the event (e.g., "[Enter]" only triggers when THIS card enters)
+    # Default True for ENTER_FIELD triggers (most common case)
+    triggers_on_self: bool = True
+
     def can_trigger(self, game: 'GameEngine', card: 'Card',
                     trigger: TriggerCondition, event_data: dict) -> bool:
         """
@@ -253,6 +271,14 @@ class AutomaticAbility(Ability):
         """
         if trigger != self.trigger_condition:
             return False
+
+        # For self-only triggers, check if the event card is this card
+        # This is critical for [Enter] abilities - they only fire when
+        # THIS specific card enters, not when ANY card enters
+        if self.triggers_on_self:
+            event_card = event_data.get('card') or event_data.get('source')
+            if event_card is None or event_card.uid != card.uid:
+                return False
 
         if self.once_per_turn and self.trigger_count > 0:
             return False
@@ -320,6 +346,12 @@ class AutomaticAbility(Ability):
         self.trigger_count -= 1
 
         # Execute effects
+        if not self.effects:
+            logger.warning(
+                f"AutomaticAbility '{self.name}' (trigger: {self.trigger_condition.value}) "
+                f"on {card.data.name} has no effects to execute. "
+                f"This ability may need manual implementation in its script."
+            )
         for effect in self.effects:
             effect.execute(game, card, targets, player)
 

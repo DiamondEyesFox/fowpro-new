@@ -112,13 +112,12 @@ class RulesCardScript(ABC):
         Register a CR-compliant ability.
 
         This is the primary method for defining card behavior.
+        CR abilities are handled by APNAPTriggerManager - NOT lifecycle hooks.
         """
         self._abilities.append(ability)
-
-        # Also create old-style Effect for backward compatibility with engine
-        old_effect = self._convert_to_old_effect(ability)
-        if old_effect:
-            self._old_effects.append(old_effect)
+        # NOTE: We do NOT convert to old effects anymore to prevent double-firing.
+        # CR abilities are handled by the engine's APNAPTriggerManager (rules/integration.py).
+        # Old effects (_old_effects) are ONLY for explicitly registered legacy effects.
 
     def _convert_to_old_effect(self, ability: Ability) -> Optional[OldEffect]:
         """Convert a CR ability to old Effect format for engine compatibility."""
@@ -212,26 +211,35 @@ class RulesCardScript(ABC):
         """Get all registered CR-compliant abilities."""
         return self._abilities
 
-    def get_activated_abilities(self, game: 'GameEngine', card: 'Card') -> List[OldEffect]:
+    def get_activated_abilities(self, game: 'GameEngine', card: 'Card') -> List[Ability]:
         """
         Get activated abilities that can currently be used.
 
-        Returns old-style Effects for backward compatibility with engine.
+        Returns CR-compliant ActivateAbility objects.
         """
         abilities = []
+
+        # Check CR-compliant abilities
+        for ability in self._abilities:
+            if not isinstance(ability, ActivateAbility):
+                continue
+            # Use the ability's own can_play() check
+            if ability.can_play(game, card, card.controller):
+                abilities.append(ability)
+
+        # Also check any legacy effects (for backward compat)
         for effect in self._old_effects:
             if effect.effect_type != OldEffectType.ACTIVATED:
                 continue
-            # Check condition
             if effect.condition and not effect.condition(game, card):
                 continue
-            # Check once per turn
-            if effect.once_per_turn and effect._activated_this_turn:
+            if effect.once_per_turn and getattr(effect, '_activated_this_turn', False):
                 continue
-            # Check tap cost
             if effect.tap_cost and card.is_rested:
                 continue
+            # Convert to pseudo-ability for unified interface
             abilities.append(effect)
+
         return abilities
 
     # =========================================================================

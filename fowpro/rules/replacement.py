@@ -111,9 +111,16 @@ class ReplacementEffect:
     # Has this been applied to current event?
     applied_this_event: bool = False
 
-    def can_replace(self, game: 'GameEngine', card: 'Card',
+    def can_replace(self, game: 'GameEngine', card: Optional['Card'],
                     event_data: Dict[str, Any]) -> bool:
-        """Check if this replacement can apply to an event."""
+        """Check if this replacement can apply to an event.
+
+        Args:
+            game: The game engine
+            card: The card being affected, or None for non-card events
+                  (like life gain or card draw)
+            event_data: Additional event data
+        """
         # Get source
         source = game.get_card(self.source_id)
         if not source:
@@ -123,13 +130,13 @@ class ReplacementEffect:
         if self.is_self_replacement and self.applied_this_event:
             return False
 
-        # Check affects restrictions
+        # Check affects restrictions (require card for these)
         if self.affects_self_only:
-            if card.uid != self.source_id:
+            if card is None or card.uid != self.source_id:
                 return False
 
         if self.affects_source_controller_only:
-            if card.controller != source.controller:
+            if card is None or card.controller != source.controller:
                 return False
 
         # Check condition
@@ -227,8 +234,8 @@ class ReplacementManager:
 
             # If multiple apply, affected player chooses (CR 910.3)
             if len(applicable) > 1:
-                affected_player = card.controller
-                effect = self._choose_replacement(affected_player, applicable)
+                affected_player = card.controller if card else 0
+                effect = self._choose_replacement(affected_player, applicable, card)
             else:
                 effect = applicable[0]
 
@@ -260,7 +267,8 @@ class ReplacementManager:
         return applicable
 
     def _choose_replacement(self, player: int,
-                            effects: List[ReplacementEffect]) -> ReplacementEffect:
+                            effects: List[ReplacementEffect],
+                            source_card: Optional['Card'] = None) -> ReplacementEffect:
         """
         Let player choose which replacement to apply first.
 
@@ -269,8 +277,31 @@ class ReplacementManager:
         For AI, just pick the first one. For human, this should
         trigger a UI prompt.
         """
-        # TODO: Integrate with UI for human players
-        # For now, just return the first effect
+        # Try UI modal choice if available
+        try:
+            from .modals import ModalChoice, Mode
+            if self.game._rules_engine and self.game._rules_engine.choices:
+                modes = []
+                for idx, effect in enumerate(effects):
+                    name = effect.name or effect.effect_id or f"Replacement {idx + 1}"
+                    modes.append(Mode(name=name, description=name, operation=None))
+
+                modal = ModalChoice(
+                    modes=modes,
+                    choose_count=1,
+                    up_to=False,
+                    prompt="Choose replacement effect"
+                )
+
+                choices = self.game._rules_engine.request_modal_choice(
+                    player, source_card, modal
+                )
+                if choices and 0 <= choices[0] < len(effects):
+                    return effects[choices[0]]
+        except Exception:
+            pass
+
+        # Fallback: pick the first effect
         return effects[0]
 
     def would_destroy(self, card: 'Card', cause: str = "") -> Tuple[bool, str]:
