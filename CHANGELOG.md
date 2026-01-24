@@ -5,6 +5,35 @@ All notable changes to FoWPro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.2] - 2026-01-24
+
+### Added
+- **Codex Audit Documentation**: Comprehensive codebase analysis in `docs/codex_audit/`
+  - `fix_list_v1.md` tracking identified issues and fixes
+  - `reality_check_v1.md` documenting actual v1 capabilities
+  - Audit notes for engine, rules, scripts, GUI, models subsystems
+- Legacy `ActivatedAbility` wrapper for stone scripts with proper target prompting
+
+### Changed
+- **Ability Resolution**: CR abilities and legacy stone abilities now resolve correctly
+  - Targets chosen when abilities go on chase, revalidated at resolution
+  - Triggers fizzle when required targets become illegal (CR 906)
+  - CR ActivateAbility: costs paid on activation, effects execute on resolution
+- **Combat/Priority**: Attack/block legality aligned with v1's "combat in Main Phase" model
+- **Replacement Effects**: Multiple replacements now use modal choice when UI callback exists
+- **Modal Spells**: Engine respects `get_choose_count()` for upgrade conditions
+- **Will Production**: Multi-color will and Little Red stones prompt for attribute choice via ChoiceManager
+- **Layer System**: STAT_CDA layer now applies `set_atk`/`set_def` effects
+
+### Fixed
+- Spell target revalidation at resolution (checks script requirements)
+- Legacy activated abilities properly pass targets to operations
+
+### Known Issues
+- CR ActivateAbility `additional_costs` not yet implemented (activation blocked if present)
+- Generated scripts lack detailed target filters and modal upgrade conditions
+- Layer system lacks full dependency and CDA nuance beyond basic set_atk/set_def
+
 ## [0.2.1] - 2026-01-04
 
 ### Added
