@@ -10,6 +10,7 @@ from enum import Enum, auto, Flag
 from typing import Optional, Callable, Any
 import uuid
 import json
+import re
 
 
 # =============================================================================
@@ -29,6 +30,19 @@ class Attribute(Flag):
     # Multi-attribute shortcuts
     @classmethod
     def from_string(cls, s: str) -> "Attribute":
+        if not s:
+            return cls.NONE
+        text = s.lower().strip()
+        # Support combined attributes stored as "FIRE|WIND" or "fire/wind"
+        if any(sep in text for sep in ("|", "/", ",")):
+            parts = re.split(r"[|/,]+", text)
+            combined = cls.NONE
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                combined |= cls.from_string(part)
+            return combined
         mapping = {
             "light": cls.LIGHT, "white": cls.LIGHT, "w": cls.LIGHT,
             "fire": cls.FIRE, "red": cls.FIRE, "r": cls.FIRE,
@@ -37,7 +51,7 @@ class Attribute(Flag):
             "darkness": cls.DARKNESS, "black": cls.DARKNESS, "b": cls.DARKNESS,
             "void": cls.VOID, "colorless": cls.VOID,
         }
-        return mapping.get(s.lower().strip(), cls.NONE)
+        return mapping.get(text, cls.NONE)
 
 
 class CardType(Enum):
@@ -178,6 +192,32 @@ class Keyword(Flag):
             "remnant": cls.REMNANT,
         }
         return mapping.get(s.lower().strip(), cls.NONE)
+
+
+def coerce_keyword_flag(value) -> "Keyword":
+    """
+    Coerce KeywordAbility/Keyword/int into Keyword for v1 compatibility.
+    """
+    if value is None:
+        return Keyword.NONE
+    if isinstance(value, Keyword):
+        return value
+    try:
+        from .rules.types import KeywordAbility  # Lazy import to avoid cycles
+    except Exception:
+        KeywordAbility = None
+    if KeywordAbility and isinstance(value, KeywordAbility):
+        converted = Keyword.NONE
+        for name, kw in Keyword.__members__.items():
+            if name in KeywordAbility.__members__ and (value & KeywordAbility[name]):
+                converted |= kw
+        return converted
+    if hasattr(value, "name") and value.name in Keyword.__members__:
+        return Keyword[value.name]
+    try:
+        return Keyword(value)
+    except Exception:
+        return Keyword.NONE
 
 
 class Rarity(Enum):
@@ -577,7 +617,10 @@ class Card:
 
     @property
     def effective_keywords(self) -> Keyword:
-        return (self.data.keywords | self.granted_keywords) & ~self.removed_keywords
+        base = coerce_keyword_flag(self.data.keywords)
+        granted = coerce_keyword_flag(self.granted_keywords)
+        removed = coerce_keyword_flag(self.removed_keywords)
+        return (base | granted) & ~removed
 
     def has_keyword(self, kw) -> bool:
         """

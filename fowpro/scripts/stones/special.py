@@ -149,12 +149,12 @@ class LittleRedThePureStone(CardScript):
                     except Exception:
                         chosen = None
 
-                # Fallback default
-                if chosen is None:
-                    chosen = Attribute.LIGHT
-
-                self._chosen_attribute[card.uid] = chosen
-            logger.debug(f"Little Red on_enter_field: set attribute to {self._chosen_attribute[card.uid]}")
+                # If no choice was made (no UI), leave unchosen so first tap can decide
+                if chosen is not None:
+                    self._chosen_attribute[card.uid] = chosen
+                    logger.debug(f"Little Red on_enter_field: set attribute to {self._chosen_attribute[card.uid]}")
+                else:
+                    logger.debug("Little Red on_enter_field: no choice made; leaving unchosen")
         except Exception as e:
             logger.debug(f"Little Red on_enter_field CRASH: {e}")
             import traceback
@@ -179,6 +179,13 @@ class LittleRedThePureStone(CardScript):
             Attribute.WIND,
             Attribute.DARKNESS,
         ]
+
+    def produce_will(self, game: 'GameEngine', card: 'Card',
+                     chosen_color: 'Attribute') -> bool:
+        """Lock in the chosen attribute on first use, then produce will."""
+        if card.uid not in self._chosen_attribute:
+            self._chosen_attribute[card.uid] = chosen_color
+        return super().produce_will(game, card, chosen_color)
 
 
 # =============================================================================

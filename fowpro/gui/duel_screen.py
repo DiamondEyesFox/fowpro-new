@@ -7,6 +7,7 @@ Professional duel interface with YGOPro-quality appearance.
 import json
 import logging
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 
@@ -16,7 +17,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QSplitter, QGridLayout, QTextEdit,
     QSizePolicy, QGraphicsDropShadowEffect, QMessageBox, QComboBox,
-    QDialog, QDialogButtonBox, QMenu, QLineEdit, QStackedWidget, QCheckBox
+    QDialog, QDialogButtonBox, QMenu, QLineEdit, QStackedWidget, QCheckBox,
+    QApplication
 )
 from PyQt6.QtCore import Qt, QSize, pyqtSignal, QTimer, QRectF, QMimeData, QPoint
 from PyQt6.QtGui import (
@@ -68,6 +70,7 @@ class DuelLobbyDialog(QDialog):
         self.selected_ai_class = RandomAI
         self.opponent_autopass = False
         self.ai_delay = 300  # ms between AI actions
+        self.ruleset = "grimm"
 
         self._setup_ui()
         self._load_decks()
@@ -132,6 +135,12 @@ class DuelLobbyDialog(QDialog):
         self.ai_desc.setWordWrap(True)
         ai_layout.addWidget(self.ai_desc)
 
+        # Default testing setup: Pass-Only AI
+        for i, (name, _, _) in enumerate(self.AI_TYPES):
+            if "Pass-Only" in name:
+                self.ai_combo.setCurrentIndex(i)
+                break
+
         layout.addWidget(ai_group)
 
         # ─────────────────────────────────────────────────────────────────────
@@ -146,12 +155,25 @@ class DuelLobbyDialog(QDialog):
         settings_header.setFont(QFont("Segoe UI", 12, QFont.Weight.Bold))
         settings_layout.addWidget(settings_header)
 
+        # Ruleset selection
+        rules_label = QLabel("Ruleset")
+        rules_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
+        settings_layout.addWidget(rules_label)
+
+        self.rules_combo = QComboBox()
+        self.rules_combo.setMinimumHeight(32)
+        self.rules_combo.addItem("Grimm Cluster Era", "grimm")
+        self.rules_combo.addItem("Current Rules", "current")
+        self.rules_combo.setCurrentIndex(0)
+        settings_layout.addWidget(self.rules_combo)
+
         # Opponent auto-pass checkbox
         self.autopass_check = QCheckBox("Opponent Auto-Pass (AI passes immediately)")
         self.autopass_check.setToolTip(
             "When enabled, the AI will pass priority immediately without delay.\n"
             "Useful for faster games or testing."
         )
+        self.autopass_check.setChecked(True)
         settings_layout.addWidget(self.autopass_check)
 
         # AI thinking delay checkbox
@@ -325,6 +347,8 @@ class DuelLobbyDialog(QDialog):
             # Check if this is the default
             if default_deck and (deck_path == default_deck or deck_path.name == default_deck.name):
                 default_index = i
+            elif default_deck is None and deck_path.stem.lower() == "default":
+                default_index = i
 
         self.deck_combo.setCurrentIndex(default_index)
         self._on_deck_changed(default_index)
@@ -372,6 +396,7 @@ class DuelLobbyDialog(QDialog):
         self.selected_ai_class = self.ai_combo.currentData()
         self.opponent_autopass = self.autopass_check.isChecked()
         self.ai_delay = 300 if self.ai_delay_check.isChecked() else 50
+        self.ruleset = self.rules_combo.currentData()
 
         self.accept()
 
@@ -382,6 +407,7 @@ class DuelLobbyDialog(QDialog):
             'ai_class': self.selected_ai_class,
             'opponent_autopass': self.opponent_autopass,
             'ai_delay': self.ai_delay,
+            'ruleset': self.ruleset,
         }
 
 
@@ -414,6 +440,7 @@ class DuelCardWidget(QFrame):
         self.small = small
         self.draggable = draggable
         self._selected = False
+        self._highlight_color = None
         self._drag_start_pos = None
         self._did_drag = False  # Track if drag occurred (don't emit click)
         self.setMouseTracking(True)
@@ -522,7 +549,10 @@ class DuelCardWidget(QFrame):
         # Border color based on attribute and selection
         attr = self.card.data.attribute.name if self.card.data.attribute else 'VOID'
         attr_color = self.ATTRIBUTE_COLORS.get(attr, Colors.BORDER_MEDIUM)
-        border_color = Colors.ACCENT if self._selected else attr_color
+        if self._highlight_color:
+            border_color = self._highlight_color
+        else:
+            border_color = Colors.ACCENT if self._selected else attr_color
 
         # Rested cards get a dimmed background
         bg_extra = ""
@@ -624,6 +654,11 @@ class DuelCardWidget(QFrame):
 
     def set_selected(self, selected: bool):
         self._selected = selected
+        self._update_display()
+
+    def set_highlight(self, color: str = None):
+        """Set a temporary border highlight color (e.g., choice selection)."""
+        self._highlight_color = color
         self._update_display()
 
     def mousePressEvent(self, event):
@@ -794,6 +829,15 @@ class ZoneWidget(QFrame):
             self._widgets.append(widget)
 
         self.label.setText(f"{self.zone_name} ({len(cards)})")
+
+    def get_widget_for_card(self, card):
+        """Return the DuelCardWidget for a given card, if present."""
+        if not card:
+            return None
+        for widget in self._widgets:
+            if widget.card and widget.card.uid == card.uid:
+                return widget
+        return None
 
     def dragEnterEvent(self, event):
         """Accept card drags"""
@@ -1248,6 +1292,19 @@ class DuelScreen(QWidget):
         self.ai = None  # AI opponent instance
         self.ai_executor = None  # Executes AI decisions on engine
 
+        # Ruleset (Grimm vs Current)
+        self.ruleset = "grimm"
+
+        # Hand choice state (e.g., Cheshire Cat put back)
+        self._hand_choice_active = False
+        self._hand_choice_allowed = []
+        self._hand_choice_selected = []
+        self._hand_choice_select_count = 1
+        self._hand_choice_select_up_to = False
+        self._hand_choice_dialog = None
+        self._hand_choice_ok_btn = None
+        self._hand_choice_label = None
+
         # Lobby settings (from DuelLobbyDialog)
         self.opponent_autopass = False  # AI passes immediately without actions
         self.ai_delay = 300  # Delay in ms between AI actions
@@ -1383,6 +1440,10 @@ class DuelScreen(QWidget):
         self.priority_label = QLabel("Your Priority")
         self.priority_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY}; background: transparent; font-size: 12px;")
 
+        # Ruleset indicator
+        self.rules_label = QLabel("Rules: Grimm")
+        self.rules_label.setStyleSheet(f"color: {Colors.TEXT_MUTED}; background: transparent; font-size: 11px;")
+
         # Buttons
         self.pass_btn = QPushButton("Pass [Space]")
         self.pass_btn.setToolTip("Pass priority - both passing advances phase")
@@ -1403,6 +1464,7 @@ class DuelScreen(QWidget):
         left_side.addWidget(self.phase_label)
         left_side.addWidget(self.combat_indicator)
         left_side.addWidget(self.priority_label)
+        left_side.addWidget(self.rules_label)
         left_side.addSpacing(20)
         left_side.addWidget(self.pass_btn)
         left_side.addWidget(self.next_btn)
@@ -1655,6 +1717,7 @@ class DuelScreen(QWidget):
         self.opponent_autopass = settings['opponent_autopass']
         self.ai_delay = settings['ai_delay']
         self.selected_ai_class = settings['ai_class']
+        self.ruleset = settings.get('ruleset', 'grimm')
 
         # Start game with selected deck
         return self.start_new_game(deck_path=settings['deck_path'])
@@ -1676,7 +1739,7 @@ class DuelScreen(QWidget):
         if not db:
             return False
 
-        from ..engine import GameEngine, EventType
+        from ..engine import GameEngine, EventType, Phase
         from ..models import CardType
 
         # Option to use v2 engine (YGOPro-style architecture)
@@ -1726,6 +1789,7 @@ class DuelScreen(QWidget):
             self.engine = GameEngine(db)
 
         self.engine.subscribe(self._on_game_event)
+        self.engine.ruleset = self.ruleset
 
         # Enhance with CR-compliant rules engine (v1 only)
         if not use_v2_engine:
@@ -1734,7 +1798,12 @@ class DuelScreen(QWidget):
         # Setup and start
         self.engine.setup_game(p0_deck, p0_stones, p0_ruler, p1_deck, p1_stones, p1_ruler)
         self.engine.shuffle_decks()
-        self.engine.start_game(0)
+        self.engine.start_game(0, start_phase=False)
+
+        # Mulligan step (pre-game, before first phase)
+        self._handle_mulligan(self.human_player)
+        # Enter first phase after mulligan
+        self.engine.change_phase(Phase.DRAW)
 
         # Initialize AI opponent with selected AI class
         ai_player = 1 - self.human_player
@@ -1748,7 +1817,24 @@ class DuelScreen(QWidget):
         # Sync in-game settings panel with lobby settings
         self.opponent_autopass_check.setChecked(self.opponent_autopass)
 
+        # Clear log and start a new file per game
         self.game_log.clear()
+        if hasattr(self, "_log_file") and self._log_file:
+            try:
+                self._log_file.close()
+            except Exception:
+                pass
+            self._log_file = None
+        try:
+            base_path = Path(__file__).parent.parent.parent
+            logs_dir = base_path / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            log_path = logs_dir / f"fowpro_{timestamp}.log"
+            self._log_file = open(log_path, "w", encoding="utf-8")
+        except Exception:
+            self._log_file = None
+
         self._log("Game started!", Colors.SUCCESS)
         self._log(f"Opponent: {self.ai.name}", Colors.TEXT_MUTED)
         if self.opponent_autopass:
@@ -1863,16 +1949,22 @@ class DuelScreen(QWidget):
                 result = dialog.get_result()
 
         elif choice.choice_type == ChoiceType.CARD_FROM_LIST:
-            dialog = CardListDialog(
-                choice.prompt,
-                choice.card_list,
-                choice.select_count,
-                choice.select_up_to,
-                lambda c: c.data.name if c.data else str(c),
-                self
-            )
-            if dialog.exec():
-                result = dialog.get_result()
+            if self._can_handle_hand_choice(choice.card_list):
+                result = self._handle_hand_choice_dialog(choice.prompt,
+                                                         choice.card_list,
+                                                         choice.select_count,
+                                                         choice.select_up_to)
+            else:
+                dialog = CardListDialog(
+                    choice.prompt,
+                    choice.card_list,
+                    choice.select_count,
+                    choice.select_up_to,
+                    lambda c: c.data.name if c.data else str(c),
+                    self
+                )
+                if dialog.exec():
+                    result = dialog.get_result()
 
         elif choice.choice_type == ChoiceType.ATTRIBUTE:
             dialog = AttributeChoiceDialog(
@@ -1884,6 +1976,130 @@ class DuelScreen(QWidget):
                 result = dialog.get_result()
 
         return result
+
+    def _handle_mulligan(self, player: int):
+        """Handle a single mulligan for the human player based on ruleset."""
+        if not self.engine or player != self.human_player:
+            return
+        p = self.engine.players[player]
+        if p.has_mulliganed:
+            return
+        if not p.hand:
+            return
+        # Use hand-choice dialog (select up to any number)
+        chosen = self._handle_hand_choice_dialog(
+            prompt="Mulligan: Select any number of cards to return, then draw that many.",
+            cards=list(p.hand),
+            select_count=len(p.hand),
+            select_up_to=True,
+        )
+        if not chosen:
+            return
+        self.engine.apply_mulligan(player, chosen, self.ruleset)
+        p.has_mulliganed = True
+        self._log(f"Mulliganed {len(chosen)} card(s)", Colors.INFO)
+
+    def _can_handle_hand_choice(self, cards: list) -> bool:
+        """Return True if all cards are in the human player's hand."""
+        if not self.engine or cards is None:
+            return False
+        hand_uids = {c.uid for c in self.engine.players[self.human_player].hand}
+        return all(getattr(c, "uid", None) in hand_uids for c in cards)
+
+    def _handle_hand_choice_dialog(self, prompt: str, cards: list,
+                                   select_count: int, select_up_to: bool):
+        """Highlight hand cards and let player click to choose."""
+        from PyQt6.QtCore import QEventLoop
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QDialogButtonBox
+
+        # Initialize state
+        self._hand_choice_active = True
+        self._hand_choice_allowed = list(cards)
+        self._hand_choice_selected = []
+        self._hand_choice_select_count = max(1, select_count)
+        self._hand_choice_select_up_to = bool(select_up_to)
+
+        # Build dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Choose Card")
+        dialog.setModal(False)
+        dialog.setMinimumWidth(420)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(16, 16, 16, 16)
+
+        prompt_label = QLabel(prompt)
+        prompt_label.setWordWrap(True)
+        prompt_label.setStyleSheet(f"color: {Colors.TEXT_PRIMARY};")
+        dialog_layout.addWidget(prompt_label)
+
+        info_text = "Select up to" if select_up_to else "Select"
+        self._hand_choice_label = QLabel(f"{info_text} {select_count} card(s) from your hand")
+        self._hand_choice_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
+        dialog_layout.addWidget(self._hand_choice_label)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok |
+                                   QDialogButtonBox.StandardButton.Cancel)
+        ok_btn = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok_btn.setText("Return")
+        ok_btn.setEnabled(select_up_to)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        dialog_layout.addWidget(buttons)
+
+        self._hand_choice_dialog = dialog
+        self._hand_choice_ok_btn = ok_btn
+
+        # Highlight hand cards
+        self._refresh_hand_choice_highlights()
+
+        loop = QEventLoop()
+        result = []
+
+        def finish(accepted: bool):
+            nonlocal result
+            if accepted:
+                if select_up_to or len(self._hand_choice_selected) >= select_count:
+                    result = list(self._hand_choice_selected)
+            self._clear_hand_choice_state()
+            loop.quit()
+
+        dialog.accepted.connect(lambda: finish(True))
+        dialog.rejected.connect(lambda: finish(False))
+        dialog.show()
+        loop.exec()
+        return result
+
+    def _refresh_hand_choice_highlights(self):
+        """Apply yellow/red borders for current hand choice state."""
+        if not self._hand_choice_active:
+            return
+        allowed_uids = {c.uid for c in self._hand_choice_allowed}
+        selected_uids = {c.uid for c in self._hand_choice_selected}
+        for widget in self.player_area.hand_zone._widgets:
+            if not widget.card:
+                continue
+            if widget.card.uid in selected_uids:
+                widget.set_highlight("#ff4444")  # red
+            elif widget.card.uid in allowed_uids:
+                widget.set_highlight("#f7d23b")  # yellow
+            else:
+                widget.set_highlight(None)
+
+    def _clear_hand_choice_state(self):
+        """Reset hand choice UI state and highlights."""
+        self._hand_choice_active = False
+        self._hand_choice_allowed = []
+        self._hand_choice_selected = []
+        self._hand_choice_select_count = 1
+        self._hand_choice_select_up_to = False
+        if self._hand_choice_dialog:
+            self._hand_choice_dialog.close()
+        self._hand_choice_dialog = None
+        self._hand_choice_ok_btn = None
+        self._hand_choice_label = None
+        # Clear highlights
+        for widget in self.player_area.hand_zone._widgets:
+            widget.set_highlight(None)
 
     def _request_targets_for_spell(self, card) -> list:
         """Request target selection for a spell that needs targets"""
@@ -2062,6 +2278,10 @@ class DuelScreen(QWidget):
             self.priority_label.setText("Opponent's Priority")
             self.priority_label.setStyleSheet(f"color: {Colors.WARNING}; background: transparent; font-size: 12px;")
 
+        # Ruleset indicator
+        rules_text = "Grimm" if self.ruleset == "grimm" else "Current"
+        self.rules_label.setText(f"Rules: {rules_text}")
+
         # Update player areas
         self.player_area.update_from_state(self.engine.players[self.human_player], hide_hand=False)
         self.opponent_area.update_from_state(self.engine.players[1 - self.human_player], hide_hand=True)
@@ -2069,6 +2289,10 @@ class DuelScreen(QWidget):
         # Update chase
         chase_cards = [item.source for item in self.engine.chase]
         self.chase_zone.set_cards(chase_cards)
+
+        # Re-apply hand choice highlights if active
+        if self._hand_choice_active:
+            self._refresh_hand_choice_highlights()
 
         # Update button states
         self._update_buttons()
@@ -2301,6 +2525,12 @@ class DuelScreen(QWidget):
         """Add message to game log"""
         # Also print to file log
         print(f"[GAME] {message}")
+        if hasattr(self, "_log_file") and self._log_file:
+            try:
+                self._log_file.write(f"{message}\n")
+                self._log_file.flush()
+            except Exception:
+                pass
         if color:
             self.game_log.append(f'<span style="color: {color}">{message}</span>')
         else:
@@ -2327,6 +2557,32 @@ class DuelScreen(QWidget):
 
         self._log(f"Clicked: {card.data.name} in {zone}", Colors.TEXT_SECONDARY)
         logger.debug(f"Card clicked: {card.data.name} in {zone}, is_stone={card.data.is_stone()}, is_resonator={card.data.is_resonator()}")
+
+        # If hand selection is active (e.g., Cheshire Cat), intercept hand clicks
+        if self._hand_choice_active and zone == "hand":
+            if card and any(card.uid == c.uid for c in self._hand_choice_allowed):
+                if card in self._hand_choice_selected:
+                    self._hand_choice_selected.remove(card)
+                else:
+                    if len(self._hand_choice_selected) >= self._hand_choice_select_count:
+                        if self._hand_choice_select_up_to:
+                            return
+                        # Replace oldest selection if at limit
+                        self._hand_choice_selected.pop(0)
+                    self._hand_choice_selected.append(card)
+                self._refresh_hand_choice_highlights()
+                if self._hand_choice_label:
+                    self._hand_choice_label.setText(
+                        f"Selected: {len(self._hand_choice_selected)}/{self._hand_choice_select_count}"
+                    )
+                if self._hand_choice_ok_btn:
+                    if self._hand_choice_select_up_to:
+                        self._hand_choice_ok_btn.setEnabled(True)
+                    else:
+                        self._hand_choice_ok_btn.setEnabled(
+                            len(self._hand_choice_selected) >= self._hand_choice_select_count
+                        )
+            return
 
         # Try actions based on zone
         if zone == "hand":
@@ -2767,6 +3023,7 @@ class DuelScreen(QWidget):
     def _auto_tap_for_cost(self, cost, card_being_played=None) -> bool:
         """Auto-tap mana sources to pay for a cost (Arena-style with hand lookahead)."""
         from ..models import Attribute
+        from ..models import Keyword
 
         p = self.engine.players[self.human_player]
 
@@ -2774,43 +3031,58 @@ class DuelScreen(QWidget):
         if p.will_pool.can_pay(cost):
             return True
 
-        # Only auto-tap stones, never creatures
-        mana_sources = []
-        available_colors = {}  # Track what colors we CAN produce
+        # Build mana sources (stones first, then mana creatures if needed)
+        stone_sources = []
+        creature_sources = []
+
         for card in p.field:
             if card.is_rested:
                 continue
-            if not card.data.is_stone():
+            if card.data.is_stone():
+                will_colors = self.engine.get_will_colors(card)
+                if will_colors:
+                    stone_sources.append(card)
                 continue
-            will_colors = self.engine.get_will_colors(card)
-            if will_colors:
-                mana_sources.append(card)
-                for color in will_colors:
+            # Mana creatures (resonators with produce_will)
+            if card.data.is_resonator():
+                # Summoning sickness check (same as manual tap)
+                if card.entered_turn == self.engine.turn_number and not card.has_keyword(Keyword.SWIFTNESS):
+                    continue
+                will_colors = self.engine.get_will_colors(card)
+                if will_colors:
+                    creature_sources.append(card)
+
+        if not stone_sources and not creature_sources:
+            return False
+
+        def can_pay_with_sources(sources: list) -> bool:
+            available_colors = {}
+            for s in sources:
+                for color in self.engine.get_will_colors(s):
                     available_colors[color] = available_colors.get(color, 0) + 1
+            # Check each colored requirement
+            color_requirements = {
+                Attribute.LIGHT: cost.light,
+                Attribute.FIRE: cost.fire,
+                Attribute.WATER: cost.water,
+                Attribute.WIND: cost.wind,
+                Attribute.DARKNESS: cost.darkness,
+            }
+            for attr, needed in color_requirements.items():
+                already_have = getattr(p.will_pool, attr.name.lower(), 0)
+                still_need = max(0, needed - already_have)
+                if still_need > 0 and available_colors.get(attr, 0) < still_need:
+                    return False
+            total_available = len(sources) + p.will_pool.total
+            return total_available >= cost.total
 
-        if not mana_sources:
-            return False
-
-        # PRE-CHECK: Verify we can actually pay the colored costs before tapping anything
-        # Check each colored requirement
-        color_requirements = {
-            Attribute.LIGHT: cost.light,
-            Attribute.FIRE: cost.fire,
-            Attribute.WATER: cost.water,
-            Attribute.WIND: cost.wind,
-            Attribute.DARKNESS: cost.darkness,
-        }
-        for attr, needed in color_requirements.items():
-            already_have = getattr(p.will_pool, attr.name.lower(), 0)
-            still_need = max(0, needed - already_have)
-            if still_need > 0 and available_colors.get(attr, 0) < still_need:
-                # Can't produce enough of this color - don't tap anything
+        # Prefer stones only; include creatures only if stones alone can't pay
+        if can_pay_with_sources(stone_sources):
+            mana_sources = list(stone_sources)
+        else:
+            mana_sources = list(stone_sources) + list(creature_sources)
+            if not can_pay_with_sources(mana_sources):
                 return False
-
-        # Also check total mana is sufficient
-        total_available = len(mana_sources) + p.will_pool.total
-        if total_available < cost.total:
-            return False
 
         # Analyze what colors other cards in hand need (lookahead)
         colors_needed_by_hand = {}  # Attribute -> count of cards needing it
@@ -2829,19 +3101,21 @@ class DuelScreen(QWidget):
             if hc.darkness > 0:
                 colors_needed_by_hand[Attribute.DARKNESS] = colors_needed_by_hand.get(Attribute.DARKNESS, 0) + 1
 
-        # Sort stones by priority:
-        # 1. Stones that DON'T produce colors needed by other cards (tap first)
-        # 2. Single-color stones before multi-color (preserve flexibility)
-        # 3. Stones producing less-needed colors before more-needed
-        def stone_priority(stone):
-            colors = self.engine.get_will_colors(stone)
+        # Sort sources by priority:
+        # Stones first, then creatures (lowest ATK creatures first)
+        # Use hand-need overlap + flexibility for color choice efficiency
+        def source_priority(source):
+            colors = self.engine.get_will_colors(source)
             # How many other cards in hand need colors this stone produces?
             hand_overlap = sum(colors_needed_by_hand.get(c, 0) for c in colors)
             # Flexibility (fewer colors = tap first)
             flexibility = len(colors) if colors else 999
-            return (hand_overlap, flexibility)
+            if source.data.is_stone():
+                return (0, hand_overlap, flexibility, 0)
+            atk_val = source.effective_atk if hasattr(source, "effective_atk") else (source.data.atk or 0)
+            return (1, atk_val, hand_overlap, flexibility)
 
-        mana_sources.sort(key=stone_priority)
+        mana_sources.sort(key=source_priority)
 
         # Calculate what colors we need for current spell
         def get_needed():
@@ -2890,11 +3164,13 @@ class DuelScreen(QWidget):
                     key=lambda c: colors_needed_by_hand.get(c, 0))
                 chosen = sorted_colors[0]
 
-            # Third: if we still need something, just tap (least needed by hand)
+            # Third: if we still need something, only tap for generic cost
+            # (avoid tapping off-color stones when only a specific color is missing)
             if not chosen and not p.will_pool.can_pay(cost):
-                sorted_colors = sorted(available_colors,
-                    key=lambda c: colors_needed_by_hand.get(c, 0))
-                chosen = sorted_colors[0]
+                if get_generic_needed() > 0:
+                    sorted_colors = sorted(available_colors,
+                        key=lambda c: colors_needed_by_hand.get(c, 0))
+                    chosen = sorted_colors[0]
 
             if chosen:
                 if self.engine.produce_will(self.human_player, source, chosen):

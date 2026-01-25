@@ -218,7 +218,7 @@ class ActivateAbility(Ability):
                 f"This ability may need manual implementation in its script."
             )
         for effect in self.effects:
-            effect.execute(game, card, targets, player)
+            effect.execute(game, card, targets, player, choices)
 
         return True
 
@@ -353,7 +353,7 @@ class AutomaticAbility(Ability):
                 f"This ability may need manual implementation in its script."
             )
         for effect in self.effects:
-            effect.execute(game, card, targets, player)
+            effect.execute(game, card, targets, player, choices)
 
         return True
 
@@ -719,7 +719,7 @@ class ModalAbility(ActivateAbility):
             if 0 <= idx < len(self.choices):
                 name, effect = self.choices[idx]
                 if effect:
-                    effect.execute(game, card, targets or [], player)
+                    effect.execute(game, card, targets or [], player, choices)
 
         return True
 

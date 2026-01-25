@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ..models import Card
 
 from .types import EffectDuration, KeywordAbility
+from ..models import Keyword, coerce_keyword_flag
 from .targeting import TargetFilter
 from .conditions import Condition
 
@@ -330,7 +331,7 @@ class LayerManager:
             card.current_atk = 0
             card.current_def = 0
 
-        card.granted_keywords = KeywordAbility.NONE
+        card.granted_keywords = Keyword.NONE
         card.granted_abilities = []
 
     def _apply_effect_to_card(self, effect: LayeredEffect, card: 'Card'):
@@ -377,9 +378,9 @@ class LayerManager:
         # Layer 6: Abilities
         elif layer == Layer.ABILITY:
             if effect.grant_keywords:
-                card.granted_keywords |= effect.grant_keywords
+                card.granted_keywords |= coerce_keyword_flag(effect.grant_keywords)
             if effect.remove_keywords:
-                card.granted_keywords &= ~effect.remove_keywords
+                card.granted_keywords &= ~coerce_keyword_flag(effect.remove_keywords)
             for ability in effect.grant_abilities:
                 if ability not in card.granted_abilities:
                     card.granted_abilities.append(ability)

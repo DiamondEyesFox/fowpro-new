@@ -24,3 +24,15 @@
 - CR ActivateAbility `additional_costs` not implemented (activation blocked if present).
 - Generated scripts still lack detailed target filters and many modal upgrade conditions.
 - Layer system still lacks full dependency and CDA nuance beyond basic set_atk/set_def.
+
+### Added
+- Ruleset selector (Grimm Cluster Era vs Current Rules) in duel lobby; rules indicator on HUD (`fowpro/gui/duel_screen.py`).
+- Pre-game mulligan step (single mulligan) with ruleset behavior: Grimm = bottom of deck, Current = shuffle in (`fowpro/engine.py`, `fowpro/gui/duel_screen.py`).
+- Hand-choice UI for "choose card from hand" (yellow highlight, red selection, Return button enabled on valid pick); reused for Cheshire/hand discard/mulligan (`fowpro/gui/duel_screen.py`).
+
+### Changed
+- Start flow now shows duel screen before lobby so mulligan/choice UI appears in duel view (`fowpro/gui/app.py`).
+- Autotap can use mana creatures when stones alone can’t pay; prioritizes lowest ATK creatures after stones (`fowpro/gui/duel_screen.py`).
+- "Any attribute" will selection excludes Void (`fowpro/scripts/rules_bridge.py`).
+- Gretel reveal matching no longer treats any-color stones as wind unless explicitly "treated as a wind magic stone" (`fowpro/rules/effects.py`).
+- Fixed keyword enum mismatches and rules-effects Zone usage; choices passed into effects (multiple files).

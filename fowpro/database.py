@@ -184,10 +184,7 @@ class CardDatabase:
 
         # Parse attribute
         attr_str = row["attribute"] or "NONE"
-        try:
-            attribute = Attribute[attr_str]
-        except KeyError:
-            attribute = Attribute.NONE
+        attribute = Attribute.from_string(attr_str)
 
         # Parse card type
         card_type = CardType.from_string(row["card_type"])

@@ -18,6 +18,7 @@ from enum import Enum
 logger = logging.getLogger(__name__)
 
 from .types import EffectAction, EffectDuration, KeywordAbility
+from ..models import Zone, coerce_keyword_flag
 from .targeting import TargetRequirement, TargetFilter
 from .conditions import Condition
 from .modals import ModalChoice
@@ -63,7 +64,8 @@ class Effect:
     reference_target: Optional['Card'] = None
 
     def execute(self, game: 'GameEngine', source: 'Card',
-                targets: List['Card'] = None, player: int = None) -> bool:
+                targets: List['Card'] = None, player: int = None,
+                choices: dict = None) -> bool:
         """
         Execute this effect.
 
@@ -88,10 +90,11 @@ class Effect:
         self.resolved_targets = targets or []
 
         # Execute based on action type
-        return self._execute_action(game, source, targets, player)
+        return self._execute_action(game, source, targets, player, choices or {})
 
     def _execute_action(self, game: 'GameEngine', source: 'Card',
-                        targets: List['Card'], player: int) -> bool:
+                        targets: List['Card'], player: int,
+                        choices: dict) -> bool:
         """Execute the specific action."""
         action = self.action
         params = self.params
@@ -114,17 +117,17 @@ class Effect:
 
         if action == EffectAction.BANISH:
             for target in targets:
-                game.move_card(target, target.controller, game.Zone.GRAVEYARD)
+                game.move_card(target, target.controller, Zone.GRAVEYARD)
             return True
 
         if action == EffectAction.RETURN_TO_HAND:
             for target in targets:
-                game.move_card(target, target.owner, game.Zone.HAND)
+                game.move_card(target, target.owner, Zone.HAND)
             return True
 
         if action == EffectAction.REMOVE_FROM_GAME:
             for target in targets:
-                game.move_card(target, target.owner, game.Zone.REMOVED)
+                game.move_card(target, target.owner, Zone.REMOVED)
             return True
 
         # Card draw (CR 1009)
@@ -190,6 +193,12 @@ class Effect:
         if action == EffectAction.PRODUCE_WILL:
             from ..models import Attribute
             attr = params.get('attribute', Attribute.VOID)
+            if params.get('any_color'):
+                chosen = choices.get('color')
+                if isinstance(chosen, str):
+                    chosen = Attribute.from_string(chosen)
+                if chosen:
+                    attr = chosen
             count = params.get('count', 1)
             game.players[player].will_pool.add(attr, count)
             return True
@@ -239,14 +248,14 @@ class Effect:
             keyword = params.get('keyword')
             if keyword:
                 for target in targets:
-                    target.granted_keywords |= keyword
+                    target.granted_keywords |= coerce_keyword_flag(keyword)
             return True
 
         if action == EffectAction.REMOVE_KEYWORD:
             keyword = params.get('keyword')
             if keyword:
                 for target in targets:
-                    target.granted_keywords &= ~keyword
+                    target.granted_keywords &= ~coerce_keyword_flag(keyword)
             return True
 
         # Cancel (CR 1012)
@@ -270,7 +279,7 @@ class Effect:
                 if x_variable and hasattr(target, 'data') and target.data:
                     if target.data.total_cost > x_value:
                         continue
-                game.move_card(target, player, game.Zone.FIELD)
+                game.move_card(target, player, Zone.FIELD)
             return True
 
         # Search (CR 1014)
@@ -301,7 +310,7 @@ class Effect:
                 if destination == 'hand':
                     game.players[player].hand.append(chosen)
                 elif destination == 'field':
-                    game.move_card(chosen, player, game.Zone.FIELD)
+                    game.move_card(chosen, player, Zone.FIELD)
                 # Shuffle deck
                 import random
                 random.shuffle(deck)
@@ -333,28 +342,51 @@ class Effect:
 
         # Put on top of deck
         if action == EffectAction.PUT_ON_TOP_OF_DECK:
+            # If no targets provided, choose from player's hand
+            if not targets:
+                hand = game.players[player].hand if player is not None else []
+                if hand:
+                    chosen = None
+                    if getattr(game, "_rules_engine", None):
+                        try:
+                            chosen = game._rules_engine.choices.request_card_from_list(
+                                player=player,
+                                source=source,
+                                cards=list(hand),
+                                count=1,
+                                up_to=False,
+                                prompt="Choose a card to put on top of your main deck",
+                            )
+                        except Exception:
+                            chosen = None
+                    if not chosen:
+                        chosen = [hand[0]]
+                    targets = chosen
+
             for target in targets:
                 owner = target.owner if hasattr(target, 'owner') else target.controller
-                # Remove from current zone
-                game.move_card(target, game.Zone.REMOVED)  # Temp removal
-                # Put on top of deck
-                game.players[owner].deck.insert(0, target)
-                target.zone = game.Zone.DECK
+                # Move to main deck, then place on top
+                game.move_card(target, Zone.MAIN_DECK, owner)
+                deck = game.players[owner].main_deck
+                if target in deck:
+                    deck.remove(target)
+                deck.insert(0, target)
+                target.zone = Zone.MAIN_DECK
             return True
 
         # Put on bottom of deck
         if action == EffectAction.PUT_ON_BOTTOM_OF_DECK:
             for target in targets:
                 owner = target.owner if hasattr(target, 'owner') else target.controller
-                game.move_card(target, game.Zone.REMOVED)  # Temp removal
+                game.move_card(target, Zone.REMOVED)  # Temp removal
                 game.players[owner].deck.append(target)
-                target.zone = game.Zone.DECK
+                target.zone = Zone.DECK
             return True
 
         # Put into graveyard
         if action == EffectAction.PUT_INTO_GRAVEYARD:
             for target in targets:
-                game.move_card(target, game.Zone.GRAVEYARD)
+                game.move_card(target, Zone.GRAVEYARD)
             return True
 
         # Shuffle into deck
@@ -362,9 +394,9 @@ class Effect:
             import random
             for target in targets:
                 owner = target.owner if hasattr(target, 'owner') else target.controller
-                game.move_card(target, game.Zone.REMOVED)  # Temp removal
+                game.move_card(target, Zone.REMOVED)  # Temp removal
                 game.players[owner].deck.append(target)
-                target.zone = game.Zone.DECK
+                target.zone = Zone.DECK
             # Shuffle each affected player's deck
             owners = set(t.owner if hasattr(t, 'owner') else t.controller for t in targets)
             for owner in owners:
@@ -397,6 +429,7 @@ class Effect:
 
                         # Check condition (e.g., "if it's a wind magic stone")
                         if condition_attr and move_if_condition:
+                            from ..models import Attribute
                             card_attr = revealed_card.data.attribute if revealed_card.data else None
                             # Check if card matches the required attribute
                             matches = False
@@ -406,15 +439,31 @@ class Effect:
                                 else:
                                     matches = card_attr == condition_attr
 
+                            # Fallback: check rules text for explicit "treated as a <color> magic stone"
+                            if not matches and isinstance(condition_attr, str):
+                                try:
+                                    cond_attr = Attribute.from_string(condition_attr)
+                                except Exception:
+                                    cond_attr = Attribute.NONE
+
+                                # Check rules text for "treated as a wind magic stone" style phrases
+                                if not matches and revealed_card.data and revealed_card.data.ability_text:
+                                    import re
+                                    text = revealed_card.data.ability_text.lower()
+                                    color = condition_attr.lower()
+                                    pattern = rf"(?:treated\s+as|is)\s+(?:a\s+)?{color}\s+magic\s+stone"
+                                    if re.search(pattern, text):
+                                        matches = True
+
                             if matches:
                                 # Remove from deck and put into field
                                 deck.remove(revealed_card)
                                 # Determine target zone
-                                target_zone = game.Zone.FIELD
+                                target_zone = Zone.FIELD
                                 if move_zone == 'hand':
-                                    target_zone = game.Zone.HAND
+                                    target_zone = Zone.HAND
                                 elif move_zone == 'graveyard':
-                                    target_zone = game.Zone.GRAVEYARD
+                                    target_zone = Zone.GRAVEYARD
 
                                 game.move_card(revealed_card, target_zone, player)
                                 logger.info(f"Moved {revealed_card.data.name} to {move_zone} (condition '{condition_attr}' met)")
@@ -530,7 +579,7 @@ class Effect:
                     data=token_card_data,
                     owner=player,
                     controller=player,
-                    zone=game.Zone.FIELD,
+                    zone=Zone.FIELD,
                 )
                 token.is_token = True
                 game.players[player].field.append(token)
@@ -804,9 +853,9 @@ class ContinuousEffect:
         # Layer 7: Keywords
         if layer == EffectLayer.KEYWORDS:
             if self.grant_keywords:
-                card.granted_keywords |= self.grant_keywords
+                card.granted_keywords |= coerce_keyword_flag(self.grant_keywords)
             if self.remove_keywords:
-                card.granted_keywords &= ~self.remove_keywords
+                card.granted_keywords &= ~coerce_keyword_flag(self.remove_keywords)
 
         # Layer 8: Abilities
         if layer == EffectLayer.ABILITIES:
@@ -904,7 +953,7 @@ class ContinuousEffectManager:
             if effect.duration == EffectDuration.WHILE_ON_FIELD:
                 # Check if source is still on field
                 source = game.get_card_by_uid(effect.source_id)
-                if not source or source.zone != game.Zone.FIELD:
+                if not source or source.zone != Zone.FIELD:
                     keep = False
 
             # Other duration types are handled by the game's phase system

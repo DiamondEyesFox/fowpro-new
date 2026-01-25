@@ -348,8 +348,13 @@ class GameEngine:
 
     def get_script(self, card: Card):
         """Get the script for a card"""
+        # Cache per-card script instance to avoid shared-state bugs
+        if hasattr(card, "_script") and card._script:
+            return card._script
         registry = _get_script_registry()
-        return registry.get(card.data.code)
+        script = registry.get(card.data.code, fresh=True)
+        card._script = script
+        return script
 
     def get_will_pool(self, player: int) -> dict:
         """
@@ -522,7 +527,7 @@ class GameEngine:
             random.shuffle(p.main_deck)
             random.shuffle(p.stone_deck)
 
-    def start_game(self, first_player: int = 0):
+    def start_game(self, first_player: int = 0, start_phase: bool = True):
         """Start the game"""
         self.turn_number = 1
         self.turn_player = first_player
@@ -550,7 +555,26 @@ class GameEngine:
             self.draw_cards(p_idx, 5)
 
         # Start Turn 1 with Draw phase (official FoW order: Draw → Recovery → Main → End)
-        self.change_phase(Phase.DRAW)
+        if start_phase:
+            self.change_phase(Phase.DRAW)
+
+    def apply_mulligan(self, player: int, cards: list[Card], ruleset: str = "grimm"):
+        """Apply a single mulligan to chosen cards."""
+        if not cards:
+            return
+        p = self.players[player]
+        # Move chosen cards to main deck
+        for card in list(cards):
+            if card in p.hand:
+                self.move_card(card, Zone.MAIN_DECK)
+        # Grimm era: put on bottom (no shuffle). Current: shuffle.
+        if ruleset == "current":
+            random.shuffle(p.main_deck)
+        else:
+            # Ensure moved cards are at bottom (they are appended by move_card)
+            pass
+        # Draw same number
+        self.draw_cards(player, len(cards))
 
     # =========================================================================
     # TURN STRUCTURE

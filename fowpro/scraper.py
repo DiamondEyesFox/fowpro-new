@@ -21,6 +21,68 @@ GRIMM_CLUSTER_SETS = {
     "MOA": ("MOA", 1, 50, "The Millennia of Ages"),
 }
 
+_ATTR_WORDS = {
+    "light": Attribute.LIGHT,
+    "fire": Attribute.FIRE,
+    "water": Attribute.WATER,
+    "wind": Attribute.WIND,
+    "darkness": Attribute.DARKNESS,
+}
+
+_NAME_ATTR_WORDS = {
+    "light": Attribute.LIGHT,
+    "fire": Attribute.FIRE,
+    "flame": Attribute.FIRE,
+    "water": Attribute.WATER,
+    "wind": Attribute.WIND,
+    "darkness": Attribute.DARKNESS,
+    "dark": Attribute.DARKNESS,
+}
+
+def _attribute_from_links(soup: BeautifulSoup) -> Attribute:
+    """Extract single attribute from color links (if present)."""
+    for link in soup.find_all('a', href=True):
+        href = link.get('href', '')
+        if 'colours=' in href:
+            color_match = re.search(r'colours=([WRUGB])', href)
+            if color_match:
+                color_char = color_match.group(1).lower()
+                color_map = {
+                    'w': Attribute.LIGHT,
+                    'r': Attribute.FIRE,
+                    'u': Attribute.WATER,
+                    'g': Attribute.WIND,
+                    'b': Attribute.DARKNESS,
+                }
+                return color_map.get(color_char, Attribute.NONE)
+    return Attribute.NONE
+
+
+def _attributes_from_name(name: str) -> set[Attribute]:
+    """Detect attributes from a magic stone name."""
+    if not name:
+        return set()
+    name_lower = name.lower()
+    if "magic stone" not in name_lower:
+        return set()
+    attrs = set()
+    for word, attr in _NAME_ATTR_WORDS.items():
+        if word in name_lower:
+            attrs.add(attr)
+    return attrs
+
+
+def _attributes_from_text(text: str) -> set[Attribute]:
+    """Detect attributes from rules text like 'wind magic stone'."""
+    if not text:
+        return set()
+    text_lower = text.lower()
+    attrs = set()
+    for word, attr in _ATTR_WORDS.items():
+        if re.search(rf"\\b{word}\\s+magic stone\\b", text_lower):
+            attrs.add(attr)
+    return attrs
+
 
 class CardScraper:
     """Scrapes card data from Force of Wind"""
@@ -142,41 +204,6 @@ class CardScraper:
 
             page_lower = page_text.lower()
 
-            # Parse attribute from color indicators
-            # Look for attribute symbols like {W}, {R}, {U}, {G}, {B}
-            attr_map = {
-                '{w}': Attribute.LIGHT,
-                '{r}': Attribute.FIRE,
-                '{u}': Attribute.WATER,
-                '{g}': Attribute.WIND,
-                '{b}': Attribute.DARKNESS,
-                'light': Attribute.LIGHT,
-                'fire': Attribute.FIRE,
-                'water': Attribute.WATER,
-                'wind': Attribute.WIND,
-                'darkness': Attribute.DARKNESS,
-            }
-
-            # Check for attribute in links (like /search?colours=W)
-            for link in soup.find_all('a', href=True):
-                href = link.get('href', '')
-                if 'colours=' in href:
-                    color_match = re.search(r'colours=([WRUGB])', href)
-                    if color_match:
-                        color_char = color_match.group(1).lower()
-                        color_map = {'w': Attribute.LIGHT, 'r': Attribute.FIRE,
-                                    'u': Attribute.WATER, 'g': Attribute.WIND,
-                                    'b': Attribute.DARKNESS}
-                        attribute = color_map.get(color_char, Attribute.NONE)
-                        break
-
-            # Fallback: check page text for attribute words
-            if attribute == Attribute.NONE:
-                for pattern, attr in attr_map.items():
-                    if pattern in page_lower:
-                        attribute = attr
-                        break
-
             # Parse cost using proper DOM traversal
             # Find the "Cost:" section in card-text-info divs
             for info_div in soup.find_all('div', class_='card-text-info'):
@@ -284,6 +311,29 @@ class CardScraper:
 
             # Join with newlines for readability
             ability_text = '\n'.join(ability_parts) if ability_parts else ""
+
+            # Parse attribute (prefer precise sources over full page text)
+            if card_type in (CardType.MAGIC_STONE, CardType.SPECIAL_MAGIC_STONE):
+                attrs = set()
+                attrs |= _attributes_from_name(name)
+                attrs |= _attributes_from_text(ability_text)
+                if not attrs:
+                    link_attr = _attribute_from_links(soup)
+                    if link_attr != Attribute.NONE:
+                        attrs.add(link_attr)
+                for attr in attrs:
+                    attribute |= attr
+            else:
+                attribute = _attribute_from_links(soup)
+                if attribute == Attribute.NONE:
+                    attrs = set()
+                    attrs |= _attributes_from_text(ability_text)
+                    if not attrs:
+                        for word, attr in _ATTR_WORDS.items():
+                            if word in name.lower():
+                                attrs.add(attr)
+                    for attr in attrs:
+                        attribute |= attr
 
             # Parse keywords from ability text
             keywords = Keyword.NONE

@@ -323,10 +323,12 @@ class FoWProApp(QMainWindow):
         # Get duel screen and show lobby
         duel_screen = self._get_screen(Screen.DUEL)
         if hasattr(duel_screen, 'show_lobby_and_start'):
+            # Show duel screen first so mulligan/choice UI appears there
+            self.show_screen(Screen.DUEL)
             # Show lobby dialog - if user confirms, game starts
-            if duel_screen.show_lobby_and_start():
-                # Only switch to duel screen if game started successfully
-                self.show_screen(Screen.DUEL)
+            if not duel_screen.show_lobby_and_start():
+                # If cancelled, return to main menu
+                self.show_screen(Screen.MAIN_MENU)
         elif hasattr(duel_screen, 'start_new_game'):
             # Fallback for old behavior
             self.show_screen(Screen.DUEL)

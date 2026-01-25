@@ -330,9 +330,15 @@ class RulesCardScript(ABC):
                 # Check if this activate ability produces will
                 for effect in ability.effects:
                     if hasattr(effect, 'action') and effect.action == EffectAction.PRODUCE_WILL:
-                        attr = effect.params.get('attribute')
-                        if attr and attr not in colors:
-                            colors.append(attr)
+                        if effect.params.get('any_color'):
+                            for attr in [Attribute.LIGHT, Attribute.FIRE, Attribute.WATER,
+                                         Attribute.WIND, Attribute.DARKNESS]:
+                                if attr not in colors:
+                                    colors.append(attr)
+                        else:
+                            attr = effect.params.get('attribute')
+                            if attr and attr not in colors:
+                                colors.append(attr)
 
         return colors
 
@@ -357,12 +363,17 @@ class RulesCardScript(ABC):
             if isinstance(ability, ActivateAbility):
                 for effect in ability.effects:
                     if hasattr(effect, 'action') and effect.action == EffectAction.PRODUCE_WILL:
-                        attr = effect.params.get('attribute')
-                        if attr == chosen_color:
-                            # Execute this ability
+                        if effect.params.get('any_color'):
                             if ability.can_play(game, card, card.controller):
                                 return ability.resolve(game, card, card.controller,
                                                       choices={'color': chosen_color})
+                        else:
+                            attr = effect.params.get('attribute')
+                            if attr == chosen_color:
+                                # Execute this ability
+                                if ability.can_play(game, card, card.controller):
+                                    return ability.resolve(game, card, card.controller,
+                                                          choices={'color': chosen_color})
         return False
 
     # =========================================================================

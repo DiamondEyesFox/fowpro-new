@@ -313,11 +313,14 @@ class ScriptRegistry:
         return script_class
 
     @classmethod
-    def get(cls, card_code: str) -> CardScript:
-        """Get a script instance for a card code"""
+    def get(cls, card_code: str, fresh: bool = False) -> CardScript:
+        """Get a script instance for a card code.
+
+        If fresh=True, return a new instance without caching (per-card use).
+        """
         logger.debug(f"ScriptRegistry.get({card_code})")
         # Check cache
-        if card_code in cls._instances:
+        if not fresh and card_code in cls._instances:
             logger.debug(f"ScriptRegistry: returning cached {cls._instances[card_code].__class__.__name__}")
             return cls._instances[card_code]
 
@@ -332,7 +335,8 @@ class ScriptRegistry:
             logger.debug(f"ScriptRegistry: using base CardScript")
             instance = CardScript(card_code)
 
-        cls._instances[card_code] = instance
+        if not fresh:
+            cls._instances[card_code] = instance
         return instance
 
     @classmethod
