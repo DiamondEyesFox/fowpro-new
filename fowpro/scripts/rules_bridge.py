@@ -33,6 +33,7 @@ from ..rules import (
     Ability, ActivateAbility, AutomaticAbility, ContinuousAbility, WillAbility,
     JudgmentAbility, ModalAbility, IncarnationCost, AwakeningCost,
     AbilityFactory,
+    CostPaymentModifier,
 )
 
 # Import old system for compatibility
@@ -118,6 +119,19 @@ class RulesCardScript(ABC):
         # NOTE: We do NOT convert to old effects anymore to prevent double-firing.
         # CR abilities are handled by the engine's APNAPTriggerManager (rules/integration.py).
         # Old effects (_old_effects) are ONLY for explicitly registered legacy effects.
+
+    def register_spell_effect(self, effects: List[RulesEffect]):
+        """
+        Register spell effects to run on resolution.
+
+        Spells resolve via on_resolve(), which executes AutomaticAbility entries.
+        """
+        self._abilities.append(AutomaticAbility(
+            name="Spell Effect",
+            trigger_condition=TriggerCondition.SPELL_RESOLVES,
+            effects=effects,
+            is_mandatory=True,
+        ))
 
     def _convert_to_old_effect(self, ability: Ability) -> Optional[OldEffect]:
         """Convert a CR ability to old Effect format for engine compatibility."""
@@ -420,8 +434,8 @@ class RulesCardScript(ABC):
         # Execute all spell effects
         for ability in self._abilities:
             if isinstance(ability, AutomaticAbility):
-                # Spells have implicit "on cast" trigger
-                ability.resolve(game, card, card.controller)
+                if ability.trigger_condition == TriggerCondition.SPELL_RESOLVES:
+                    ability.resolve(game, card, card.controller)
 
     # =========================================================================
     # MODAL SUPPORT
@@ -528,6 +542,7 @@ __all__ = [
     'RulesEffect', 'ContinuousEffect', 'ReplacementEffect', 'EffectBuilder',
     'Ability', 'ActivateAbility', 'AutomaticAbility', 'ContinuousAbility', 'WillAbility',
     'AbilityFactory',
+    'CostPaymentModifier',
 
     # Convenience functions
     'create_stone_script', 'create_resonator_script',

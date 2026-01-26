@@ -98,6 +98,7 @@ from .costs import (
     AlternativeCost,
     CostReduction,
     CostIncrease,
+    CostPaymentModifier,
     CostPaymentPlan,
     CostBuilder,
 )
@@ -171,7 +172,8 @@ __all__ = [
 
     # Cost System (CR 402, 1002)
     'CostManager', 'CostType', 'WillType', 'WillCost', 'AdditionalCost',
-    'AlternativeCost', 'CostReduction', 'CostIncrease', 'CostPaymentPlan', 'CostBuilder',
+    'AlternativeCost', 'CostReduction', 'CostIncrease', 'CostPaymentModifier',
+    'CostPaymentPlan', 'CostBuilder',
 
     # Layer System (CR 909)
     'LayerManager', 'Layer', 'LayeredEffect', 'LayeredEffectBuilder',

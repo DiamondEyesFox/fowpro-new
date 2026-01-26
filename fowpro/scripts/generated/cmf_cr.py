@@ -15,6 +15,7 @@ from ..rules_bridge import (
     Condition, ConditionType, ConditionBuilder,
     ContinuousEffect, RulesEffect, EffectAction,
     ModalAbility, IncarnationCost, AwakeningCost,
+    CostPaymentModifier,
 )
 from ...models import Attribute, WillCost
 
@@ -95,11 +96,13 @@ class DreamOfJuliet(RulesCardScript):
         ]
         # Upgrade: you control " juliet, the hope " and " romeo, the 
         modal_upgrade_count = 3
-        # TODO: Implement condition check
+        modal_upgrade_condition = ConditionBuilder.all_of(Condition(ConditionType.CONTROL_CARD, params={"name": 'juliet, the hope'}), Condition(ConditionType.CONTROL_CARD, params={"name": 'romeo, the despair'}))
         self.register_ability(ModalAbility(
             name="Modal Choice",
             choices=modal_choices,
             choose_count=1,
+            upgrade_condition=modal_upgrade_condition,
+            upgrade_count=modal_upgrade_count,
         ))
 
         # Spell effect
@@ -126,10 +129,25 @@ class GrimmTheFairyTalePrince(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{1} , discard a Fairy Tale resonator:",
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            will_cost=WillCost(generic=1),
+            additional_costs=[{'type': 'discard', 'count': 1, 'card_types': ['resonator'], 'races': ['Fairy Tale']}],
+            effects=[EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Fairy Tale', reveal=True)],
             once_per_turn=True,
         ))
 
+        # [Continuous] ability
+        # Complex continuous effect (needs manual implementation)
+        # You may pay the attribute cost of Fairy Tale resonators with will of a
+
+
+    def get_cost_modifiers(self, game, card):
+        return [
+            CostPaymentModifier(
+                name="Pay attribute costs with any will",
+                any_will_pays_colored=True,
+                applies_to_filter=lambda c, player: c and c.data and c.data.is_resonator() and any(r.lower() == 'Fairy Tale'.lower() for r in (c.data.races or [])),
+            ),
+        ]
 
 
 
@@ -435,8 +453,7 @@ class TellAFairyTale(RulesCardScript):
         """Register abilities when card is created."""
         # Spell effect
         effects = [
-            EffectBuilder.return_from_graveyard(),
-            EffectBuilder.search(destination="hand"),
+            EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Fairy Tale', reveal=True, optional_destination='field', conditional_ruler_name='Grimm, the Fairy Tale Prince'),
         ]
         self.register_spell_effect(effects)
 
@@ -892,6 +909,8 @@ class SnowWhite(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{1} , discard \" Poison Apple \".",
+            will_cost=WillCost(generic=1),
+            additional_costs=[{'type': 'discard', 'count': 1}],
             effects=[],
         ))
 
@@ -919,6 +938,7 @@ class BloodySnowWhite(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{1} , discard \" Poison Apple \": Destr",
+            will_cost=WillCost(generic=1),
             effects=[EffectBuilder.destroy()],
         ))
 
@@ -1002,12 +1022,14 @@ class CharlesVii(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{1} , banish a Human resonator: Draw ",
+            will_cost=WillCost(generic=1),
             effects=[EffectBuilder.draw(1)],
         ))
 
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{1} , banish a Human resonator: Retur",
+            will_cost=WillCost(generic=1),
             effects=[EffectBuilder.return_to_hand()],
         ))
 
@@ -1368,7 +1390,7 @@ class KaguyaPrincessOfTheMoon(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="Pay{U} {U} {1} : Search your main deck f",
             will_cost=WillCost(water=2, generic=1),
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
         ))
 
 
@@ -1531,7 +1553,7 @@ class AthosTheThreeMusketeers(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for an Addition:Re",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=False,
         ))
 
@@ -1758,15 +1780,11 @@ class Gretel(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Enter] ability - Reveal top of stone deck, put into field if wind
+        # [Enter] ability
         self.register_ability(AutomaticAbility(
-            name="Reveal the top card of your magic stone deck",
+            name="Reveal the top card of your magic stone ",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.reveal_top(
-                deck_type='stone_deck',
-                condition_attribute='wind',
-                move_if_condition=True
-            )],
+            effects=[EffectBuilder.reveal_top(deck_type='stone_deck', count=1, condition_attribute='wind', move_if_condition=True, move_zone='field')],
             is_mandatory=True,
         ))
 
@@ -1866,6 +1884,7 @@ class PussInBoots(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{9} : If you control \" Athos, the Thr",
+            will_cost=WillCost(generic=9),
             effects=[],
         ))
 
@@ -1938,8 +1957,7 @@ class SilverBullet(RulesCardScript):
 
         # Spell effect
         effects = [
-            EffectBuilder.return_from_graveyard(),
-            EffectBuilder.search(destination="hand"),
+            EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Wind', reveal=True),
         ]
         self.register_spell_effect(effects)
 
@@ -2117,7 +2135,7 @@ class CinderellaTheAshenMaiden(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Whenever this card deals damage to your ",
             trigger_condition=TriggerCondition.DEALS_DAMAGE,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Prince', reveal=True)],
             is_mandatory=False,
         ))
 
@@ -2177,7 +2195,7 @@ class LoraTheBloodSpeaker(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for a Vampire reso",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Vampire', reveal=True)],
             is_mandatory=True,
         ))
 

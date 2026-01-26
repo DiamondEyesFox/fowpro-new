@@ -41,6 +41,8 @@ class ParsedCost:
     life: int = 0
     sacrifice: Optional[str] = None  # What to sacrifice
     discard: int = 0
+    discard_types: List[str] = field(default_factory=list)
+    discard_races: List[str] = field(default_factory=list)
     banish: Optional[str] = None  # What to banish from where
     remove_counter: Optional[str] = None  # Counter type
     generic: int = 0  # Generic will cost
@@ -66,6 +68,16 @@ class ParsedAwakening:
     """Parsed Awakening enhanced cost."""
     will: Dict[str, int] = field(default_factory=dict)  # Extra will to pay
     x_cost: bool = False  # Has {X} in awakening cost
+
+
+@dataclass
+class ParsedCostModifier:
+    """Parsed cost payment modifier."""
+    name: str = ""
+    any_will_pays_colored: bool = False
+    applies_to_type: Optional[str] = None
+    applies_to_race: Optional[str] = None
+    raw_text: str = ""
 
 
 @dataclass
@@ -122,6 +134,8 @@ class ParsedAbility:
     j_ruler_only: bool = False  # Only usable by J-Rulers (J-Activate)
     # Judgment
     judgment_cost: Optional['ParsedCost'] = None  # Cost for Judgment (rulers only)
+    # Cost payment modifiers (CR 402)
+    cost_modifiers: List['ParsedCostModifier'] = field(default_factory=list)
 
 
 # =============================================================================
@@ -475,6 +489,11 @@ class CRAbilityParser:
         # Parse effects
         ability.effects = self._parse_effects(effect_text.lower())
 
+        # Parse cost payment modifiers (continuous effects that alter payment rules)
+        cost_mod = self._parse_cost_payment_modifier(effect_text.lower())
+        if cost_mod:
+            ability.cost_modifiers.append(cost_mod)
+
         # Also check for X-based effects
         if ability.cost and ability.cost.x_cost:
             x_effects = self._parse_x_cost_effect(effect_text, ability.cost)
@@ -508,9 +527,32 @@ class CRAbilityParser:
             ability.effects or
             ability.trigger_condition or
             ability.cost or
-            ability.j_ruler_only
+            ability.j_ruler_only or
+            ability.cost_modifiers
         )
         return ability if has_content else None
+
+    def _parse_cost_payment_modifier(self, text_lower: str) -> Optional[ParsedCostModifier]:
+        """
+        Parse cost payment modifiers like:
+        "You may pay the attribute cost of Fairy Tale resonators with will of any attribute."
+        """
+        match = re.search(
+            r'pay\s+the\s+attribute\s+cost\s+of\s+(.+?)\s+resonators?(?:\s+you\s+play)?\s+with\s+will\s+of\s+any\s+attribute',
+            text_lower
+        )
+        if match:
+            race_text = match.group(1).strip()
+            race_text = race_text.replace('"', '').replace("'", '')
+            race_text = ' '.join(part.capitalize() for part in race_text.split())
+            return ParsedCostModifier(
+                name="Pay attribute costs with any will",
+                any_will_pays_colored=True,
+                applies_to_type="resonator",
+                applies_to_race=race_text,
+                raw_text=match.group(0),
+            )
+        return None
 
     def _parse_trigger_condition(self, text: str) -> Optional[TriggerCondition]:
         """Parse trigger condition from text."""
@@ -550,11 +592,28 @@ class CRAbilityParser:
         if sac_match:
             cost.sacrifice = sac_match.group(2)
 
-        # Discard
+        # Discard (support filters like "discard a Fairy Tale resonator")
         discard_match = re.search(r'discard\s+(\d+|a|an)\s+cards?', text_lower)
         if discard_match:
             count = discard_match.group(1)
             cost.discard = 1 if count in ('a', 'an') else int(count)
+
+        discard_filtered = re.search(
+            r'discard\s+(?:\d+|a|an)\s+(.+?)\s+'
+            r'(resonator|addition|chant|spell|regalia|magic\s+stone)',
+            text_lower
+        )
+        if discard_filtered:
+            count = 1
+            if discard_match:
+                count = cost.discard or 1
+            cost.discard = count
+            type_text = discard_filtered.group(2)
+            cost.discard_types = [type_text.replace(" ", "_")]
+            race_text = discard_filtered.group(1).strip()
+            # Common multi-word races like "fairy tale"
+            if race_text:
+                cost.discard_races = [race_text.title()]
 
         # Banish from graveyard
         banish_match = re.search(r'banish\s+(an?|this)\s+(\w+)\s+from.*?graveyard', text_lower)
@@ -581,6 +640,8 @@ class CRAbilityParser:
     def _parse_effects(self, text: str) -> List[ParsedEffect]:
         """Parse effects from effect text."""
         effects = []
+        text_lower = text.lower()
+        handled_magic_stone_reveal = False
 
         # Will production
         will_match = re.search(r'produce\s*\{([wrugbvm])\}(?:\s*(?:or|and)\s*\{([wrugbvm])\})?', text)
@@ -643,9 +704,12 @@ class CRAbilityParser:
                 raw_text="return to hand",
             ))
 
-        # Put [target] into hand (from graveyard, etc.)
+        # Put [target] into hand (from graveyard, etc.) - skip if part of search text
         put_hand_match = re.search(r'put\s+(target\s+)?(.+?)\s+(?:from.*?\s+)?into\s+(?:your\s+|its owner\'?s?\s+)?hand', text)
         if put_hand_match and 'counter' not in text:  # Exclude "put counter"
+            if re.search(r'search\s+your\s+main\s+deck', text_lower):
+                put_hand_match = None
+        if put_hand_match and 'counter' not in text:
             target = self._parse_target_phrase(put_hand_match.group(2) if put_hand_match.group(2) else '')
             effects.append(ParsedEffect(
                 action=EffectAction.RETURN_TO_HAND,
@@ -792,7 +856,39 @@ class CRAbilityParser:
             ))
 
         # Search deck
-        if re.search(r'search.*?deck.*?put.*?hand', text):
+        # Search deck with filters, reveal, destination, and conditional field put
+        search_match = re.search(
+            r'search\s+your\s+main\s+deck\s+for\s+(?:a|an)\s+(.+?)\s+'
+            r'(resonator|addition|chant|spell|regalia|magic\s+stone)',
+            text, re.IGNORECASE
+        )
+        if search_match:
+            race_text = search_match.group(1).strip()
+            type_text = search_match.group(2).strip()
+            dest = 'hand'
+            if re.search(r'put\s+it\s+into\s+your\s+field', text, re.IGNORECASE):
+                if not re.search(r'\binstead\b', text, re.IGNORECASE):
+                    dest = 'field'
+
+            params = {
+                'destination': dest,
+                'filter_type': type_text.replace(" ", "_"),
+                'filter_race': race_text.title() if race_text else None,
+                'reveal': bool(re.search(r'reveal\s+it', text, re.IGNORECASE)),
+                'shuffle': bool(re.search(r'then\s+shuffle', text, re.IGNORECASE)),
+            }
+
+            # Optional destination if ruler matches
+            if re.search(r'if\s+your\s+ruler\s+is\s+\"?\s*grimm', text, re.IGNORECASE):
+                params['optional_destination'] = 'field'
+                params['conditional_ruler_name'] = 'Grimm, the Fairy Tale Prince'
+
+            effects.append(ParsedEffect(
+                action=EffectAction.SEARCH,
+                params=params,
+                raw_text=search_match.group(0),
+            ))
+        elif re.search(r'search.*?deck.*?put.*?hand', text):
             effects.append(ParsedEffect(
                 action=EffectAction.SEARCH,
                 params={'destination': 'hand'},
@@ -915,7 +1011,26 @@ class CRAbilityParser:
             ))
 
         # "Reveal top card"
-        if re.search(r'reveal\s+(?:the\s+)?top\s+card', text):
+        # Magic stone deck reveal with conditional move (e.g., Gretel)
+        if re.search(r'reveal\s+(?:the\s+)?top\s+card\s+of\s+your\s+magic\s+stone\s+deck', text, re.IGNORECASE):
+            # Detect attribute condition: "if it's a wind magic stone"
+            attr_match = re.search(r'if\s+it\'?s\s+(?:a\s+)?(\w+)\s+magic\s+stone', text, re.IGNORECASE)
+            cond_attr = attr_match.group(1).lower() if attr_match else None
+            effects.append(ParsedEffect(
+                action=EffectAction.REVEAL,
+                params={
+                    'from_top': True,
+                    'deck_type': 'stone_deck',
+                    'count': 1,
+                    'condition_attribute': cond_attr,
+                    'move_if_condition': bool(cond_attr),
+                    'move_zone': 'field',
+                },
+                raw_text="reveal top of magic stone deck",
+            ))
+            handled_magic_stone_reveal = True
+
+        if re.search(r'reveal\s+(?:the\s+)?top\s+card', text) and not handled_magic_stone_reveal:
             effects.append(ParsedEffect(
                 action=EffectAction.REVEAL,
                 params={'from_top': True},
@@ -1002,7 +1117,7 @@ class CRAbilityParser:
             ))
 
         # Put into magic stone area (FoW specific)
-        if re.search(r'put\s+(?:it\s+)?into\s+(?:your\s+)?magic\s+stone\s+area', text):
+        if re.search(r'put\s+(?:it\s+)?into\s+(?:your\s+)?magic\s+stone\s+area', text) and not handled_magic_stone_reveal:
             effects.append(ParsedEffect(
                 action=EffectAction.PUT_INTO_FIELD,
                 params={'destination': 'stone_area'},

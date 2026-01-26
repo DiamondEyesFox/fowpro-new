@@ -15,6 +15,7 @@ from ..rules_bridge import (
     Condition, ConditionType, ConditionBuilder,
     ContinuousEffect, RulesEffect, EffectAction,
     ModalAbility, IncarnationCost, AwakeningCost,
+    CostPaymentModifier,
 )
 from ...models import Attribute, WillCost
 
@@ -98,6 +99,7 @@ class AccedeTheLight(RulesCardScript):
         """Register abilities when card is created."""
         # Spell effect
         effects = [
+            EffectBuilder.search(destination="field", filter_type='resonator', filter_race='Resonator With The Same Total Cost As That'),
             EffectBuilder.search_on_death(destination="hand"),
         ]
         self.register_spell_effect(effects)
@@ -255,7 +257,7 @@ class GrimmiaTheSaviorOfMyth(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Whenever this card attacks >>> You may s",
             trigger_condition=TriggerCondition.DECLARES_ATTACK,
-            effects=[],
+            effects=[EffectBuilder.search(destination="hand", filter_type='addition', filter_race='Weapon', shuffle=False)],
             is_mandatory=False,
         ))
 
@@ -366,7 +368,7 @@ class SpeakerOfCreation(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for an Addition:Fi",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=True,
         ))
 
@@ -1059,7 +1061,7 @@ class JoyfulBirdcatcher(RulesCardScript):
             name="Pay{U} ,{Rest} : Search your main deck f",
             tap_cost=True,
             will_cost=WillCost(water=1),
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Bird', reveal=True)],
         ))
 
 
@@ -1285,12 +1287,14 @@ class TsukuyomiTheMoonCity(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="Pay{1} ,{Rest} : Produce{M} .",
             tap_cost=True,
+            will_cost=WillCost(generic=1),
             effects=[EffectBuilder.produce_will(Attribute.MOON)],
         ))
 
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{1} , put this card on the bottom of ",
+            will_cost=WillCost(generic=1),
             effects=[EffectBuilder.draw(1), EffectBuilder.grant_keyword(KeywordAbility.FLYING), EffectBuilder.grant_ability()],
         ))
 
@@ -1358,7 +1362,7 @@ class AladdinsLamp(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [EffectBuilder.search(destination="hand")]
+        effects = [EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Spirit', reveal=True)]
 
 
 
@@ -1587,7 +1591,7 @@ class ScheherazadeTheTellerOf1001Stories(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck, for a card and pu",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=True,
         ))
 
@@ -1636,7 +1640,7 @@ class OpenSesame(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="While you control \"Ali Baba, the Earnest",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=True,
         ))
 
@@ -1851,6 +1855,7 @@ class BindOfGravity(RulesCardScript):
         # [Activate] ability
         self.register_ability(ActivateAbility(
             name="Pay{3} : Recover added resonator.",
+            will_cost=WillCost(generic=3),
             effects=[EffectBuilder.recover()],
         ))
 
@@ -2051,7 +2056,7 @@ class KingInYellow(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="When this card is put into a graveyard f",
             trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=True,
         ))
 
@@ -2366,7 +2371,7 @@ class GiovanniTheLonelyChild(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="If you don\'t control other resonators, s",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=True,
         ))
 

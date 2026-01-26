@@ -711,7 +711,17 @@ class PriorityManager:
         if not card.data or not card.data.cost:
             return True
 
-        return self.game.players[player].will_pool.can_pay(card.data.cost)
+        any_will = False
+        if getattr(self.game, "_rules_engine", None):
+            try:
+                any_will = self.game._rules_engine.costs.any_will_pays_colored(card, player)
+            except Exception:
+                any_will = False
+
+        return self.game.players[player].will_pool.can_pay(
+            card.data.cost,
+            any_will_pays_colored=any_will,
+        )
 
     def _notify_priority_change(self):
         """Notify that priority has changed."""

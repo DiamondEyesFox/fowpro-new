@@ -58,6 +58,9 @@ class Ability(ABC):
     # Whether this ability is mandatory
     is_mandatory: bool = False
 
+    # Whether this ability uses the chase (stack) when played
+    uses_chase: bool = True
+
     # Source card (set at runtime)
     source: Optional['Card'] = None
 
@@ -152,6 +155,11 @@ class ActivateAbility(Ability):
         # Check will cost
         if self.will_cost:
             if not game.players[player].will_pool.can_pay(self.will_cost):
+                return False
+
+        # Check additional costs (if engine helper exists)
+        if self.additional_costs and hasattr(game, "_can_pay_additional_costs"):
+            if not game._can_pay_additional_costs(player, card, self.additional_costs):
                 return False
 
         # Check condition
@@ -408,6 +416,9 @@ class WillAbility(Ability):
     just after they are played.
     """
     ability_type: AbilityType = AbilityType.WILL
+
+    # Will abilities resolve immediately without chase
+    uses_chase: bool = False
 
     # Cost (usually just tap)
     tap_cost: bool = True

@@ -15,6 +15,7 @@ from ..rules_bridge import (
     Condition, ConditionType, ConditionBuilder,
     ContinuousEffect, RulesEffect, EffectAction,
     ModalAbility, IncarnationCost, AwakeningCost,
+    CostPaymentModifier,
 )
 from ...models import Attribute, WillCost
 
@@ -434,6 +435,7 @@ class SleepingBeauty(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="Pay{1} {Rest} : Resonators you control g",
             tap_cost=True,
+            will_cost=WillCost(generic=1),
             effects=[EffectBuilder.buff(200, 200, EffectDuration.INSTANT), EffectBuilder.grant_ability()],
         ))
 
@@ -610,7 +612,7 @@ class FalltgoldTheDragoon(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{Rest} : Search your main deck for a Dra",
             tap_cost=True,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Dragon', reveal=True)],
         ))
 
 
@@ -881,7 +883,7 @@ class YamatanoorochiTheEightDisasters(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="When this card is put into a graveyard f",
             trigger_condition=TriggerCondition.PUT_INTO_GRAVEYARD,
-            effects=[],
+            effects=[EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Card Named " Kusanagi Sword " And Add It To A')],
             is_mandatory=False,
         ))
 
@@ -1541,7 +1543,7 @@ class GuideOfHeaven(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [EffectBuilder.search(destination="hand")]
+        effects = [EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Elf', reveal=True)]
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1590,7 +1592,7 @@ class OzTheGreatWizard(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for a spell card w",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=False,
         ))
 
@@ -1650,7 +1652,7 @@ class RealmOfEvolution(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{G} , banish this card: Search your main",
             will_cost=WillCost(wind=1),
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Fairy Tale', reveal=True)],
         ))
 
         # [Continuous] ability
@@ -2159,8 +2161,7 @@ class SummoningArtOfAlhazred(RulesCardScript):
         """Register abilities when card is created."""
         # Spell effect
         effects = [
-            EffectBuilder.return_from_graveyard(),
-            EffectBuilder.search(destination="hand"),
+            EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Demon', reveal=True),
         ]
         self.register_spell_effect(effects)
 

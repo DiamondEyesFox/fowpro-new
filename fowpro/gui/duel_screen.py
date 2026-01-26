@@ -30,7 +30,7 @@ from .styles import Colors, Fonts
 from .assets import get_asset_manager
 from .choice_dialogs import (
     TargetSelectionDialog, ModalChoiceDialog, YesNoDialog,
-    XValueDialog, CardListDialog, AttributeChoiceDialog
+    XValueDialog, CardListDialog, AttributeChoiceDialog, OrderChoiceDialog
 )
 from ..ai import RandomAI, AggressiveAI, DefensiveAI, PassOnlyAI, AIAction
 from ..ai.base import AIExecutor, ActionType
@@ -1885,6 +1885,9 @@ class DuelScreen(QWidget):
 
             # Set up choice callback for human player
             self.rules_engine.choices.set_ui_callback(self._handle_choice_request)
+            # Also wire the engine-level ChoiceManager (used by legacy scripts)
+            if hasattr(self.engine, "choice_manager"):
+                self.engine.choice_manager.set_ui_callback(self._handle_choice_request)
         except ImportError:
             # Rules engine not available, continue without it
             self.rules_engine = None
@@ -1970,6 +1973,27 @@ class DuelScreen(QWidget):
             dialog = AttributeChoiceDialog(
                 choice.prompt,
                 choice.attribute_options,
+                self
+            )
+            if dialog.exec():
+                result = dialog.get_result()
+        elif choice.choice_type == ChoiceType.ORDER:
+            def _order_label(item):
+                try:
+                    if hasattr(item, "ability") and hasattr(item, "source"):
+                        ability_name = getattr(item.ability, "name", "Trigger")
+                        source_name = item.source.data.name if getattr(item, "source", None) and item.source.data else "Unknown"
+                        return f"{ability_name} ({source_name})"
+                except Exception:
+                    pass
+                if hasattr(item, "data") and item.data:
+                    return item.data.name
+                return str(item)
+
+            dialog = OrderChoiceDialog(
+                choice.prompt,
+                choice.items_to_order,
+                _order_label,
                 self
             )
             if dialog.exec():
@@ -2208,6 +2232,7 @@ class DuelScreen(QWidget):
     def _on_game_event(self, event):
         """Handle game events"""
         from ..engine import EventType
+        from ..models import Attribute
 
         msg = f"[{event.event_type.name}]"
         if event.card:
@@ -2222,9 +2247,32 @@ class DuelScreen(QWidget):
             color = Colors.INFO
         elif event.event_type == EventType.PHASE_CHANGE:
             color = Colors.SUCCESS
+        elif event.event_type == EventType.ENTERS_FIELD and event.card:
+            # Little Red, the Pure Stone: choose attribute on entry (GUI fallback)
+            if event.card.data.code == "MPR-098" and event.player == self.human_player:
+                self._prompt_little_red_attribute(event.card)
 
         self._log(msg, color)
         QTimer.singleShot(10, self._update_display)
+
+    def _prompt_little_red_attribute(self, card):
+        """Force Little Red's attribute choice on entry if not chosen yet."""
+        try:
+            script = self.engine.get_script(card)
+            if hasattr(script, "_chosen_attribute") and card.uid in script._chosen_attribute:
+                return
+            dialog = AttributeChoiceDialog(
+                "Choose an attribute for Little Red",
+                ["Light", "Fire", "Water", "Wind", "Darkness"],
+                self
+            )
+            if dialog.exec():
+                attr_name = dialog.get_result()
+                if attr_name:
+                    from ..models import Attribute
+                    script.set_chosen_attribute(card, Attribute[attr_name.upper()])
+        except Exception:
+            pass
 
     def _update_display(self):
         """Update all display elements"""
@@ -2304,7 +2352,8 @@ class DuelScreen(QWidget):
             QTimer.singleShot(delay, self._ai_auto_pass)
         else:
             # Human's turn - auto-pass in phases with no actions
-            QTimer.singleShot(150, self._try_human_auto_pass)
+            if self.auto_pass_check.isChecked():
+                QTimer.singleShot(400, self._try_human_auto_pass)
 
     def _ai_auto_pass(self):
         """AI opponent makes decisions"""
@@ -2390,6 +2439,14 @@ class DuelScreen(QWidget):
             return False
         if self.engine.priority_player != self.human_player:
             return False
+        if self._hand_choice_active:
+            return False
+        if hasattr(self.engine, "choice_manager") and getattr(self.engine.choice_manager, "pending_choices", None):
+            if self.engine.choice_manager.pending_choices:
+                return False
+        if self.rules_engine and getattr(self.rules_engine, "choices", None):
+            if self.rules_engine.choices.pending_choices:
+                return False
 
         # Get legal actions
         legal_actions = self.engine.get_legal_actions(self.human_player)
@@ -2402,21 +2459,57 @@ class DuelScreen(QWidget):
 
         # If we have meaningful actions, don't auto-pass
         if meaningful_actions:
-            return False
+            # Treat will-abilities as non-meaningful for auto-pass
+            still_meaningful = False
+            for action in legal_actions:
+                if action.get("type") != "activate_ability":
+                    if action.get("type") not in {"pass_priority", "produce_will"}:
+                        still_meaningful = True
+                        break
+                    continue
+                # Activate ability: check if it's a will ability
+                card = self.engine.get_card_by_uid(action.get("card")) if action.get("card") else None
+                if not card:
+                    still_meaningful = True
+                    break
+                script = self.engine.get_script(card)
+                if not script:
+                    still_meaningful = True
+                    break
+                abilities = script.get_activated_abilities(self.engine, card)
+                idx = action.get("ability_index", 0)
+                if idx is None or idx >= len(abilities):
+                    still_meaningful = True
+                    break
+                ability = abilities[idx]
+                try:
+                    from ..rules import AbilityType
+                    if ability.ability_type != AbilityType.WILL:
+                        still_meaningful = True
+                        break
+                except Exception:
+                    still_meaningful = True
+                    break
 
-        # Check if we could play cards by tapping stones (Arena-style potential)
-        # If we have untapped stones AND cards in hand, check if any card could be played
-        if "produce_will" in action_types:
+            if still_meaningful:
+                return False
+
+        # Check if we could play cards by tapping sources (Arena-style potential)
+        # Main phase: sorcery-speed cards. Other phases: instant/quickcast only.
+        if ("produce_will" in action_types or "activate_ability" in action_types):
             p = self.engine.players[self.human_player]
             if p.hand:
-                # Check if any card could potentially be played with available stones
-                if self._could_play_any_card():
+                is_main = (self.engine.turn_player == self.human_player and
+                           self.engine.current_phase.name in ["MAIN", "MAIN_2"])
+                if is_main and self._could_play_any_card():
+                    return False
+                if not is_main and self._could_play_any_card(instant_only=True):
                     return False
 
         return True
 
-    def _could_play_any_card(self) -> bool:
-        """Check if any card in hand could be played with current will + untapped stones"""
+    def _could_play_any_card(self, instant_only: bool = False) -> bool:
+        """Check if any card in hand could be played with current will + untapped sources."""
         from ..models import Attribute
         if not self.engine:
             return False
@@ -2440,15 +2533,36 @@ class DuelScreen(QWidget):
                 colors = self.engine.get_will_colors(card)
                 for color in colors:
                     available_colors[color] = available_colors.get(color, 0) + 1
+            # Add untapped mana creatures
+            elif card.data.is_resonator() and not card.is_rested:
+                colors = self.engine.get_will_colors(card)
+                if colors:
+                    total_will += 1
+                    for color in colors:
+                        available_colors[color] = available_colors.get(color, 0) + 1
 
         if total_will == 0:
             return False
 
         # Check each card in hand
         for card in p.hand:
+            if instant_only and not card.data.is_instant():
+                continue
             cost = card.data.cost
             if cost.total > total_will:
                 continue  # Not enough will total
+
+            any_will = False
+            if getattr(self.engine, "_rules_engine", None):
+                try:
+                    any_will = self.engine._rules_engine.costs.any_will_pays_colored(card, self.human_player)
+                except Exception:
+                    any_will = False
+
+            if any_will:
+                if cost.total <= total_will:
+                    return True
+                continue
 
             # Check if we can produce the required colors
             can_pay = True
@@ -2472,6 +2586,16 @@ class DuelScreen(QWidget):
 
     def _try_human_auto_pass(self):
         """Auto-pass for human if they have no actions (MTGO F8 style)"""
+        if not self.auto_pass_check.isChecked():
+            return
+        if self._hand_choice_active:
+            return
+        if hasattr(self.engine, "choice_manager") and getattr(self.engine.choice_manager, "pending_choices", None):
+            if self.engine.choice_manager.pending_choices:
+                return
+        if self.rules_engine and getattr(self.rules_engine, "choices", None):
+            if self.rules_engine.choices.pending_choices:
+                return
         if self._should_auto_pass():
             phase = self.engine.current_phase.name
             both_passed = self.engine.pass_priority(self.human_player)
@@ -2950,9 +3074,17 @@ class DuelScreen(QWidget):
         p = self.engine.players[self.human_player]
         cost = card.data.cost
 
-        # Auto-tap stones if we don't have enough will (Arena-style with hand lookahead)
-        if not p.will_pool.can_pay(cost):
-            if not self._auto_tap_for_cost(cost, card_being_played=card):
+        # Check if any-will payment modifier applies (e.g., Grimm)
+        any_will = False
+        if getattr(self.engine, "_rules_engine", None):
+            try:
+                any_will = self.engine._rules_engine.costs.any_will_pays_colored(card, self.human_player)
+            except Exception:
+                any_will = False
+
+        # Auto-tap sources if we don't have enough will (Arena-style with hand lookahead)
+        if not p.will_pool.can_pay(cost, any_will_pays_colored=any_will):
+            if not self._auto_tap_for_cost(cost, card_being_played=card, any_will_pays_colored=any_will):
                 self._log(f"Not enough will for {card.data.name} (need {cost})", Colors.WARNING)
                 return
 
@@ -3020,7 +3152,7 @@ class DuelScreen(QWidget):
 
         self._update_display()
 
-    def _auto_tap_for_cost(self, cost, card_being_played=None) -> bool:
+    def _auto_tap_for_cost(self, cost, card_being_played=None, any_will_pays_colored: bool = False) -> bool:
         """Auto-tap mana sources to pay for a cost (Arena-style with hand lookahead)."""
         from ..models import Attribute
         from ..models import Keyword
@@ -3028,7 +3160,7 @@ class DuelScreen(QWidget):
         p = self.engine.players[self.human_player]
 
         # Already have enough?
-        if p.will_pool.can_pay(cost):
+        if p.will_pool.can_pay(cost, any_will_pays_colored=any_will_pays_colored):
             return True
 
         # Build mana sources (stones first, then mana creatures if needed)
@@ -3060,6 +3192,9 @@ class DuelScreen(QWidget):
             for s in sources:
                 for color in self.engine.get_will_colors(s):
                     available_colors[color] = available_colors.get(color, 0) + 1
+            if any_will_pays_colored:
+                total_available = len(sources) + p.will_pool.total
+                return total_available >= cost.total
             # Check each colored requirement
             color_requirements = {
                 Attribute.LIGHT: cost.light,
@@ -3128,6 +3263,8 @@ class DuelScreen(QWidget):
             }
 
         def get_generic_needed():
+            if any_will_pays_colored:
+                return max(0, cost.total - p.will_pool.total)
             pool = p.will_pool
             remaining = (
                 max(0, pool.light - cost.light) +
@@ -3141,7 +3278,7 @@ class DuelScreen(QWidget):
 
         # Tap mana sources until we can pay
         for source in mana_sources:
-            if p.will_pool.can_pay(cost):
+            if p.will_pool.can_pay(cost, any_will_pays_colored=any_will_pays_colored):
                 break
 
             available_colors = self.engine.get_will_colors(source)
@@ -3151,11 +3288,12 @@ class DuelScreen(QWidget):
             needed = get_needed()
             chosen = None
 
-            # First: colors we specifically need for this spell
-            for attr in available_colors:
-                if needed.get(attr, 0) > 0:
-                    chosen = attr
-                    break
+            if not any_will_pays_colored:
+                # First: colors we specifically need for this spell
+                for attr in available_colors:
+                    if needed.get(attr, 0) > 0:
+                        chosen = attr
+                        break
 
             # Second: for generic cost, prefer colors NOT needed by hand
             if not chosen and get_generic_needed() > 0:
@@ -3166,7 +3304,7 @@ class DuelScreen(QWidget):
 
             # Third: if we still need something, only tap for generic cost
             # (avoid tapping off-color stones when only a specific color is missing)
-            if not chosen and not p.will_pool.can_pay(cost):
+            if not chosen and not p.will_pool.can_pay(cost, any_will_pays_colored=any_will_pays_colored):
                 if get_generic_needed() > 0:
                     sorted_colors = sorted(available_colors,
                         key=lambda c: colors_needed_by_hand.get(c, 0))
@@ -3176,7 +3314,7 @@ class DuelScreen(QWidget):
                 if self.engine.produce_will(self.human_player, source, chosen):
                     self._log(f"Auto-tapped {source.data.name} for {chosen.name.title()}", Colors.TEXT_MUTED)
 
-        return p.will_pool.can_pay(cost)
+        return p.will_pool.can_pay(cost, any_will_pays_colored=any_will_pays_colored)
 
     def _try_produce_will(self, card):
         """Try to produce will from a stone or mana creature using the script system"""

@@ -94,6 +94,7 @@ class CRScriptGenerator:
             '    Condition, ConditionType, ConditionBuilder,',
             '    ContinuousEffect, RulesEffect, EffectAction,',
             '    ModalAbility, IncarnationCost, AwakeningCost,',
+            '    CostPaymentModifier,',
             ')',
             'from ...models import Attribute, WillCost',
             '',
@@ -128,6 +129,36 @@ class CRScriptGenerator:
         """Escape quotes in ability name for Python string."""
         safe = text[:max_len].replace('\\', '\\\\').replace('"', '\\"').replace("'", "\\'")
         return safe
+
+    def _build_upgrade_condition_code(self, text: str) -> Optional[str]:
+        """Build a Condition expression from a modal upgrade condition string."""
+        if not text:
+            return None
+
+        text_lower = text.lower()
+
+        # Match quoted card names
+        names = re.findall(r'"([^"]+)"', text)
+        if not names:
+            names = re.findall(r"'([^']+)'", text)
+
+        if names:
+            cleaned = [n.strip() for n in names]
+            conds = [
+                f'Condition(ConditionType.CONTROL_CARD, params={{"name": {name!r}}})'
+                for name in cleaned
+            ]
+            if ' or ' in text_lower and ' and ' not in text_lower:
+                return f'ConditionBuilder.any_of({", ".join(conds)})'
+            return f'ConditionBuilder.all_of({", ".join(conds)})'
+
+        # Match "you control a [race]"
+        race_match = re.search(r'you\s+control\s+an?\s+([a-z\s]+?)(?:\s+resonator|\s+addition|\s+card|\s*$)', text_lower)
+        if race_match:
+            race = race_match.group(1).strip().title()
+            return f'ConditionBuilder.control_race({race!r})'
+
+        return None
 
     def _generate_stone_methods(self, abilities: List[ParsedAbility],
                                  attribute: str) -> List[str]:
@@ -206,12 +237,16 @@ class CRScriptGenerator:
         x_cost_abilities = []
         other_triggered_abilities = []  # For triggers other than enter/leave/attack
         spell_effects = []  # Effects for spell cards
+        cost_modifiers = []
         keywords = KeywordAbility.NONE
         is_ruler = 'ruler' in card_type.lower() and 'j-ruler' not in card_type.lower()
         is_spell = 'spell' in card_type.lower()
 
         # Categorize abilities
         for ability in abilities:
+            if getattr(ability, 'cost_modifiers', None):
+                cost_modifiers.extend(ability.cost_modifiers)
+
             if ability.keywords != KeywordAbility.NONE:
                 keywords |= ability.keywords
                 continue
@@ -340,6 +375,38 @@ class CRScriptGenerator:
                 lines.append(f'        return {kw_str}')
                 lines.append('')
 
+        # Generate cost payment modifiers if needed
+        if cost_modifiers:
+            lines.append('    def get_cost_modifiers(self, game, card):')
+            lines.append('        return [')
+            for mod in cost_modifiers:
+                name = getattr(mod, 'name', '') or "Cost Payment Modifier"
+                any_will = 'True' if getattr(mod, 'any_will_pays_colored', False) else 'False'
+                applies_type = getattr(mod, 'applies_to_type', None)
+                applies_race = getattr(mod, 'applies_to_race', None)
+                filter_parts = []
+                if applies_type == 'resonator':
+                    filter_parts.append('c.data.is_resonator()')
+                elif applies_type == 'spell':
+                    filter_parts.append('c.data.is_spell()')
+                elif applies_type == 'stone':
+                    filter_parts.append('c.data.is_stone()')
+                if applies_race:
+                    race_str = repr(applies_race)
+                    filter_parts.append(f'any(r.lower() == {race_str}.lower() for r in (c.data.races or []))')
+                if filter_parts:
+                    filter_expr = ' and '.join(filter_parts)
+                    filter_code = f'lambda c, player: c and c.data and {filter_expr}'
+                else:
+                    filter_code = 'lambda c, player: True'
+                lines.append('            CostPaymentModifier(')
+                lines.append(f'                name="{self._escape_name(name, 60)}",')
+                lines.append(f'                any_will_pays_colored={any_will},')
+                lines.append(f'                applies_to_filter={filter_code},')
+                lines.append('            ),')
+            lines.append('        ]')
+            lines.append('')
+
         return lines
 
     def _generate_enter_ability(self, ability: ParsedAbility) -> List[str]:
@@ -415,15 +482,29 @@ class CRScriptGenerator:
         if ability.cost:
             if ability.cost.tap:
                 lines.append(f'            tap_cost=True,')
+            # Generate WillCost (colored and/or generic)
+            will_parts = []
             if ability.cost.will:
-                # Generate WillCost
-                will_parts = []
                 for attr, count in ability.cost.will.items():
                     will_parts.append(f'{attr.lower()}={count}')
-                if ability.cost.generic:
-                    will_parts.append(f'generic={ability.cost.generic}')
-                if will_parts:
-                    lines.append(f'            will_cost=WillCost({", ".join(will_parts)}),')
+            if ability.cost.generic:
+                will_parts.append(f'generic={ability.cost.generic}')
+            if will_parts:
+                lines.append(f'            will_cost=WillCost({", ".join(will_parts)}),')
+            # Additional costs (discard, etc.)
+            additional_costs = []
+            if ability.cost.discard:
+                add = {
+                    "type": "discard",
+                    "count": ability.cost.discard,
+                }
+                if getattr(ability.cost, "discard_types", None):
+                    add["card_types"] = ability.cost.discard_types
+                if getattr(ability.cost, "discard_races", None):
+                    add["races"] = ability.cost.discard_races
+                additional_costs.append(add)
+            if additional_costs:
+                lines.append(f'            additional_costs={additional_costs},')
 
         effects_code = self._generate_effects_list(ability.effects)
         lines.append(f'            effects={effects_code},')
@@ -523,8 +604,9 @@ class CRScriptGenerator:
 
             # Search deck effect
             if effect.action == EffectAction.SEARCH:
-                dest = params.get('destination', 'hand')
-                lines.append(f'        effects = [EffectBuilder.search(destination="{dest}")]')
+                search_code = self._effect_to_code(effect)
+                if search_code:
+                    lines.append(f'        effects = [{search_code}]')
                 generated = True
                 break
 
@@ -744,7 +826,22 @@ class CRScriptGenerator:
             dest = params.get('destination', 'hand')
             if params.get('on_death'):
                 return f'EffectBuilder.search_on_death(destination="{dest}")'
-            return f'EffectBuilder.search(destination="{dest}")'
+            kwargs = [f'destination="{dest}"']
+            if params.get('filter_type'):
+                kwargs.append(f'filter_type={params.get("filter_type")!r}')
+            if params.get('filter_name'):
+                kwargs.append(f'filter_name={params.get("filter_name")!r}')
+            if params.get('filter_race'):
+                kwargs.append(f'filter_race={params.get("filter_race")!r}')
+            if params.get('reveal') is True:
+                kwargs.append('reveal=True')
+            if params.get('shuffle') is False:
+                kwargs.append('shuffle=False')
+            if params.get('optional_destination'):
+                kwargs.append(f'optional_destination={params.get("optional_destination")!r}')
+            if params.get('conditional_ruler_name'):
+                kwargs.append(f'conditional_ruler_name={params.get("conditional_ruler_name")!r}')
+            return f'EffectBuilder.search({", ".join(kwargs)})'
 
         elif action == EffectAction.BANISH:
             if params.get('self') and params.get('conditional'):
@@ -773,6 +870,19 @@ class CRScriptGenerator:
 
         elif action == EffectAction.REVEAL:
             if params.get('from_top'):
+                kwargs = []
+                if params.get('deck_type'):
+                    kwargs.append(f'deck_type={params.get("deck_type")!r}')
+                if params.get('count') is not None:
+                    kwargs.append(f'count={params.get("count")}')
+                if params.get('condition_attribute'):
+                    kwargs.append(f'condition_attribute={params.get("condition_attribute")!r}')
+                if params.get('move_if_condition'):
+                    kwargs.append('move_if_condition=True')
+                if params.get('move_zone'):
+                    kwargs.append(f'move_zone={params.get("move_zone")!r}')
+                if kwargs:
+                    return f'EffectBuilder.reveal_top({", ".join(kwargs)})'
                 return 'EffectBuilder.reveal_top()'
             if params.get('secret_choice'):
                 return 'EffectBuilder.secret_choice()'
@@ -911,12 +1021,19 @@ class CRScriptGenerator:
         if ability.modal_upgrade_condition:
             lines.append(f'        # Upgrade: {ability.modal_upgrade_condition[:50]}')
             lines.append(f'        modal_upgrade_count = {ability.modal_upgrade_count}')
-            lines.append(f'        # TODO: Implement condition check')
+            condition_code = self._build_upgrade_condition_code(ability.modal_upgrade_condition)
+            if condition_code:
+                lines.append(f'        modal_upgrade_condition = {condition_code}')
+            else:
+                lines.append(f'        modal_upgrade_condition = None')
 
         lines.append(f'        self.register_ability(ModalAbility(')
         lines.append(f'            name="Modal Choice",')
         lines.append(f'            choices=modal_choices,')
         lines.append(f'            choose_count={ability.modal_count},')
+        if ability.modal_upgrade_condition:
+            lines.append(f'            upgrade_condition=modal_upgrade_condition,')
+            lines.append(f'            upgrade_count=modal_upgrade_count,')
         lines.append(f'        ))')
         lines.append('')
         return lines

@@ -479,10 +479,12 @@ from .parser import (
 
 # Import submodules to register scripts
 # Generated scripts include stones - auto-generated from ability text
-try:
-    from . import generated
-except ImportError:
-    pass  # Generated scripts may not exist yet
+import os
+if not os.environ.get("FOWPRO_SKIP_GENERATED"):
+    try:
+        from . import generated
+    except ImportError:
+        pass  # Generated scripts may not exist yet
 
 # Import hand-crafted special stone scripts
 try:

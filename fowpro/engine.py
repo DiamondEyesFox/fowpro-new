@@ -346,6 +346,10 @@ class GameEngine:
         """Get a card by UID"""
         return self._all_cards.get(uid)
 
+    def get_card_by_uid(self, uid: str) -> Optional[Card]:
+        """Back-compat alias used by UI/AI code."""
+        return self.get_card(uid)
+
     def get_script(self, card: Card):
         """Get the script for a card"""
         # Cache per-card script instance to avoid shared-state bugs
@@ -1382,12 +1386,12 @@ class GameEngine:
                 if not targets and any(not req.validate_count(0) for req in ability.targets):
                     return False
 
-            # Additional costs for CR abilities are not wired yet
+            # Additional costs for CR abilities
             if getattr(ability, 'additional_costs', None):
-                logger.warning(
-                    f"ActivateAbility additional_costs not implemented for {card.data.name} ({ability.name})"
-                )
-                return False
+                if not self._can_pay_additional_costs(player, card, ability.additional_costs):
+                    return False
+                if not self._pay_additional_costs(player, card, ability.additional_costs):
+                    return False
 
             # Pay costs now (activation time)
             if ability.will_cost:
@@ -1442,6 +1446,63 @@ class GameEngine:
         # Check costs
         if ability.will_cost and not p.will_pool.can_pay(ability.will_cost):
             return False
+
+    def _can_pay_additional_costs(self, player: int, source_card: Card,
+                                  costs: list[dict]) -> bool:
+        """Check if additional costs can be paid (CR abilities)."""
+        p = self.players[player]
+        for cost in costs:
+            ctype = cost.get("type")
+            count = int(cost.get("count", 1))
+            if ctype == "discard":
+                valid = self._get_valid_discard_cards(player, cost)
+                if len(valid) < count:
+                    return False
+            # Other cost types can be added here
+        return True
+
+    def _pay_additional_costs(self, player: int, source_card: Card,
+                               costs: list[dict]) -> bool:
+        """Pay additional costs (CR abilities)."""
+        from .models import Zone
+        for cost in costs:
+            ctype = cost.get("type")
+            count = int(cost.get("count", 1))
+            if ctype == "discard":
+                valid = self._get_valid_discard_cards(player, cost)
+                if len(valid) < count:
+                    return False
+                chosen = []
+                if hasattr(self, "choice_manager") and self.choice_manager:
+                    chosen = self.choice_manager.request_card_from_list(
+                        player, source_card, valid, count=count,
+                        prompt="Choose cards to discard"
+                    )
+                if not chosen:
+                    chosen = valid[:count]
+                for c in chosen:
+                    self.move_card(c, Zone.GRAVEYARD, player)
+            # Other cost types can be added here
+        return True
+
+    def _get_valid_discard_cards(self, player: int, cost: dict) -> list[Card]:
+        """Return discardable cards matching cost filters."""
+        p = self.players[player]
+        valid = list(p.hand)
+        card_types = [t.lower() for t in cost.get("card_types", [])]
+        races = [r.lower() for r in cost.get("races", [])]
+        if card_types:
+            valid = [
+                c for c in valid
+                if c.data and c.data.card_type and
+                any(t in str(c.data.card_type.value).lower() for t in card_types)
+            ]
+        if races:
+            valid = [
+                c for c in valid
+                if c.data and any(r in [rr.lower() for rr in (c.data.races or [])] for r in races)
+            ]
+        return valid
         if ability.tap_cost and card.is_rested:
             return False
 
@@ -1946,9 +2007,17 @@ class GameEngine:
         """Play a spell (add to chase)"""
         p = self.players[player]
 
+        # Initialize script for spells (so spell effects are registered)
+        script = self.get_script(card)
+        if script and not getattr(card, "_script_initialized", False):
+            try:
+                script.initial_effect(self, card)
+                card._script_initialized = True
+            except Exception as e:
+                logger.exception(f"_play_spell: Script init failed for {card.data.name}")
+
         # Check for modal choices (CR 903.2a - choices are made as spell is cast)
         modal_choices = None
-        script = self.get_script(card)
         if script:
             # Check for registered ModalAbility
             abilities = getattr(script, '_abilities', [])

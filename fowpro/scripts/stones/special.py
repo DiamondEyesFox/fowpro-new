@@ -134,11 +134,11 @@ class LittleRedThePureStone(CardScript):
             # For now, default to the first available - GUI should prompt
             # Store choice keyed by card UID
             if card.uid not in self._chosen_attribute:
-                # Prefer UI prompt via rules engine if available
+                # Prefer UI prompt via engine choice manager if available
                 chosen = None
-                if hasattr(game, "_rules_engine") and game._rules_engine:
+                if hasattr(game, "choice_manager") and game.choice_manager:
                     try:
-                        attr_name = game._rules_engine.request_attribute(
+                        attr_name = game.choice_manager.request_attribute(
                             card.controller,
                             card,
                             options=["Light", "Fire", "Water", "Wind", "Darkness"],

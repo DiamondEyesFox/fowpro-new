@@ -294,8 +294,11 @@ class Condition:
         """Check if player controls a card with specified race."""
         race = self.params.get('race', '').lower()
         for c in game.players[player].field:
-            if c.data and c.data.race:
-                races = [r.strip().lower() for r in c.data.race.split('/')]
+            if c.data:
+                if hasattr(c.data, 'races') and c.data.races:
+                    races = [r.strip().lower() for r in c.data.races]
+                else:
+                    races = [r.strip().lower() for r in (getattr(c.data, 'race', '') or '').split('/')]
                 if race in races:
                     return True
         return False
@@ -325,7 +328,10 @@ class Condition:
                 if card_type and c.data.card_type.value != card_type:
                     continue
                 if race:
-                    races = [r.strip().lower() for r in (c.data.race or '').split('/')]
+                    if hasattr(c.data, 'races') and c.data.races:
+                        races = [r.strip().lower() for r in c.data.races]
+                    else:
+                        races = [r.strip().lower() for r in (getattr(c.data, 'race', '') or '').split('/')]
                     if race.lower() not in races:
                         continue
                 return True

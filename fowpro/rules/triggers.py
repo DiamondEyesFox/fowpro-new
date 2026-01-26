@@ -287,8 +287,25 @@ class APNAPTriggerManager:
         if len(triggers) <= 1:
             return triggers
 
-        # TODO: Integrate with UI for human players
-        # For now, keep timestamp order
+        # AI uses timestamp order
+        if self.game.is_ai_player(player):
+            return triggers
+
+        # Human player: request an explicit order if UI is available
+        try:
+            if self.game._rules_engine and self.game._rules_engine.choices:
+                ordered = self.game._rules_engine.choices.request_order(
+                    player=player,
+                    source=triggers[0].source if triggers else None,
+                    items=list(triggers),
+                    prompt="Choose the order of your triggers (top resolves first).",
+                )
+                if ordered and len(ordered) == len(triggers):
+                    return ordered
+        except Exception:
+            logger.exception("Failed to request trigger order; using default order")
+
+        # Fallback: keep timestamp order
         return triggers
 
     def add_triggers_to_chase(self):

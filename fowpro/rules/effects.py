@@ -288,32 +288,67 @@ class Effect:
             filter_type = params.get('filter_type')
             filter_name = params.get('filter_name')
             filter_race = params.get('filter_race')
+            reveal = params.get('reveal', False)
+            shuffle = params.get('shuffle', True)
+            optional_destination = params.get('optional_destination')
+            conditional_ruler_name = params.get('conditional_ruler_name')
 
             # Find matching cards in deck
-            deck = game.players[player].deck
+            deck = game.players[player].main_deck
             matching = []
             for card in deck:
                 if not card.data:
                     continue
-                if filter_type and filter_type.lower() not in str(card.data.card_type).lower():
+                if filter_type and filter_type.lower() not in str(card.data.card_type.value).lower():
                     continue
                 if filter_name and filter_name.lower() not in card.data.name.lower():
                     continue
-                if filter_race and filter_race.lower() not in (card.data.race or '').lower():
-                    continue
+                if filter_race:
+                    races = getattr(card.data, "races", []) or []
+                    if not any(filter_race.lower() == r.lower() for r in races):
+                        continue
                 matching.append(card)
 
-            # For now, take first match (UI should prompt choice)
+            # Choose card (UI if available)
+            chosen = None
             if matching:
-                chosen = matching[0]
+                if hasattr(game, "choice_manager") and game.choice_manager:
+                    chosen_list = game.choice_manager.request_card_from_list(
+                        player, source, matching, count=1,
+                        prompt="Choose a card to add from your deck"
+                    )
+                    if chosen_list:
+                        chosen = chosen_list[0]
+                if chosen is None:
+                    chosen = matching[0]
+
+            if chosen:
                 deck.remove(chosen)
+
+                # Reveal if needed
+                if reveal:
+                    from ..engine import EventType
+                    game.emit(EventType.CARD_REVEALED, player, chosen, deck_type="main_deck")
+
+                # Optional destination swap if ruler condition matches
+                if optional_destination and conditional_ruler_name:
+                    ruler = game.players[player].ruler
+                    if ruler and ruler.data and ruler.data.name == conditional_ruler_name:
+                        if hasattr(game, "choice_manager") and game.choice_manager:
+                            if game.choice_manager.request_yes_no(
+                                player, source,
+                                prompt="Put it into your field instead?"
+                            ):
+                                destination = optional_destination
+
                 if destination == 'hand':
-                    game.players[player].hand.append(chosen)
+                    game.move_card(chosen, Zone.HAND, player)
                 elif destination == 'field':
-                    game.move_card(chosen, player, Zone.FIELD)
-                # Shuffle deck
-                import random
-                random.shuffle(deck)
+                    game.move_card(chosen, Zone.FIELD, player)
+
+                if shuffle:
+                    import random
+                    random.shuffle(deck)
             return True
 
         # Prevent damage (CR 1018)
@@ -1267,7 +1302,10 @@ class EffectBuilder:
 
     @staticmethod
     def search(destination: str = 'hand', filter_type: str = None,
-               filter_name: str = None, filter_race: str = None) -> Effect:
+               filter_name: str = None, filter_race: str = None,
+               reveal: bool = False, shuffle: bool = True,
+               optional_destination: str = None,
+               conditional_ruler_name: str = None) -> Effect:
         """Search deck for a card."""
         return Effect(
             action=EffectAction.SEARCH,
@@ -1276,6 +1314,10 @@ class EffectBuilder:
                 'filter_type': filter_type,
                 'filter_name': filter_name,
                 'filter_race': filter_race,
+                'reveal': reveal,
+                'shuffle': shuffle,
+                'optional_destination': optional_destination,
+                'conditional_ruler_name': conditional_ruler_name,
             }
         )
 

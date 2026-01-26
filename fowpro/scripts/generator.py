@@ -64,10 +64,12 @@ class ScriptGenerator:
             f'All card scripts including magic stones are auto-generated from ability text.',
             f'"""',
             '',
+            'import logging',
             'from .. import CardScript, ScriptRegistry, Effect, EffectType, EffectTiming',
             'from ..effects import *',
             'from ...models import Attribute, Keyword',
             '',
+            'logger = logging.getLogger(__name__)',
             '',
         ]
 
@@ -405,7 +407,7 @@ class ScriptGenerator:
                 has_op = True
 
         if not has_op:
-            lines.append('            pass  # TODO: Implement')
+            lines.append('            logger.warning("Unimplemented activated effect: %s", getattr(c.data, "name", "unknown"))')
 
         # Generate Effect registration
         lines.append('')
@@ -461,7 +463,7 @@ class ScriptGenerator:
                 has_op = True
 
         if not has_op:
-            lines.append('            pass  # TODO: Implement')
+            lines.append('            logger.warning("Unimplemented trigger effect: %s", getattr(c.data, "name", "unknown"))')
 
         # Generate Effect registration
         lines.append('')

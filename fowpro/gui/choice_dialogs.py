@@ -14,7 +14,8 @@ from typing import List, Optional, Dict, Any, Callable
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QGridLayout, QButtonGroup, QRadioButton,
-    QCheckBox, QSpinBox, QDialogButtonBox, QWidget, QSizePolicy
+    QCheckBox, QSpinBox, QDialogButtonBox, QWidget, QSizePolicy,
+    QListWidget, QListWidgetItem, QAbstractItemView
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPainter, QPixmap
@@ -617,3 +618,50 @@ class AttributeChoiceDialog(ChoiceDialog):
 
     def get_result(self) -> str:
         return self.selected_attribute
+
+
+class OrderChoiceDialog(ChoiceDialog):
+    """Dialog for ordering a list of items via drag-and-drop."""
+
+    def __init__(self, prompt: str, items: List,
+                 get_item_display: Callable = None, parent=None):
+        super().__init__("Choose Order", prompt, parent)
+
+        self.items = items
+        self.get_item_display = get_item_display or (lambda i: str(i))
+
+        self.list_widget = QListWidget()
+        self.list_widget.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self.list_widget.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.list_widget.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.list_widget.setStyleSheet(f"""
+            QListWidget {{
+                background-color: {Colors.BG_MEDIUM};
+                border: 1px solid {Colors.BORDER};
+                border-radius: 4px;
+                color: {Colors.TEXT_PRIMARY};
+            }}
+            QListWidget::item {{
+                padding: 6px;
+                border: 1px solid transparent;
+            }}
+            QListWidget::item:selected {{
+                border: 1px solid {Colors.ACCENT};
+                background-color: {Colors.BG_LIGHT};
+            }}
+        """)
+
+        for item in items:
+            label = self.get_item_display(item)
+            list_item = QListWidgetItem(label)
+            list_item.setData(Qt.ItemDataRole.UserRole, item)
+            self.list_widget.addItem(list_item)
+
+        self._content_layout.addWidget(self.list_widget)
+
+    def get_result(self) -> List:
+        ordered = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            ordered.append(item.data(Qt.ItemDataRole.UserRole))
+        return ordered

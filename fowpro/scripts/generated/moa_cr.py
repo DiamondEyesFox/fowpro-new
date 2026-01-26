@@ -15,6 +15,7 @@ from ..rules_bridge import (
     Condition, ConditionType, ConditionBuilder,
     ContinuousEffect, RulesEffect, EffectAction,
     ModalAbility, IncarnationCost, AwakeningCost,
+    CostPaymentModifier,
 )
 from ...models import Attribute, WillCost
 
@@ -123,6 +124,7 @@ class KaguyaTheTaleOfTheBambooCutter(RulesCardScript):
         self.register_ability(ActivateAbility(
             name="{1} {Rest} : Put a knowledge counter on ",
             tap_cost=True,
+            will_cost=WillCost(generic=1),
             effects=[EffectBuilder.add_counter("knowledge")],
         ))
 
@@ -212,7 +214,7 @@ class ShiningBamboo(RulesCardScript):
         self.register_ability(AutomaticAbility(
             name="Search your main deck for a card name \" ",
             trigger_condition=TriggerCondition.ENTER_FIELD,
-            effects=[EffectBuilder.return_from_graveyard(), EffectBuilder.search(destination="hand")],
+            effects=[EffectBuilder.search(destination="hand")],
             is_mandatory=True,
         ))
 
@@ -741,8 +743,7 @@ class MoonIncarnation(RulesCardScript):
 
         # Spell effect
         effects = [
-            EffectBuilder.return_from_graveyard(),
-            EffectBuilder.search(destination="hand"),
+            EffectBuilder.search(destination="hand", filter_type='addition', filter_race='Moon', reveal=True),
         ]
         self.register_spell_effect(effects)
 

@@ -28,6 +28,7 @@ class Colors:
     # Accent colors
     ACCENT = "#ffd700"
     ACCENT_DARK = "#b8860b"
+    ACCENT_HOVER = "#ffe680"
 
     # Background colors
     BG_DARKEST = "#0a0a14"
@@ -62,6 +63,7 @@ class Colors:
     INFO = "#17a2b8"
 
     # Border colors
+    BORDER = "#3a3a5a"
     BORDER_DARK = "#2a2a44"
     BORDER_MEDIUM = "#3a3a5a"
     BORDER_LIGHT = "#4a4a6a"

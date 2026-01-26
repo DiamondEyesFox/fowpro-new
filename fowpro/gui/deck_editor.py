@@ -24,6 +24,7 @@ from PyQt6.QtGui import (
 
 from .styles import Colors, Fonts
 from .assets import get_asset_manager
+from ..models import CardType
 
 
 # =============================================================================
@@ -646,6 +647,10 @@ class DeckZoneWidget(QFrame):
         """Check if a card can be added, returns (can_add, reason)"""
         if len(self.cards) >= self.max_cards:
             return False, f"Deck is full ({self.max_cards} cards max)"
+
+        # Allow unlimited basic magic stones (special stones still capped)
+        if card_data and getattr(card_data, "card_type", None) == CardType.MAGIC_STONE:
+            return True, ""
 
         copies = self.count_copies(card_code)
         if copies >= self.max_copies:
