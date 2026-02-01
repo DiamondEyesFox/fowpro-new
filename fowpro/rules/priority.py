@@ -563,31 +563,24 @@ class PriorityManager:
 
     def _handle_judgment(self, player: int, **kwargs) -> bool:
         """Handle performing Judgment."""
-        p = self.game.players[player]
-
-        if not p.ruler or p.has_j_ruled:
+        ok, source, cost = self.game._can_perform_judgment(player)
+        if not ok or not source:
             return False
 
-        # Check Judgment cost
-        j_cost = p.ruler.data.judgment_cost if p.ruler.data else None
-        if j_cost and not p.will_pool.can_pay(j_cost):
-            return False
+        if cost:
+            self.game.players[player].will_pool.pay(cost)
 
-        # Pay cost
-        if j_cost:
-            p.will_pool.pay(j_cost)
-
-        # Add Judgment to chase
         from ..models import ChaseItem
         item = ChaseItem(
-            source=p.ruler,
+            source=source,
             controller=player,
             item_type="JUDGMENT",
         )
         self.game.add_to_chase(item)
+        self.game.players[player].has_judged_this_turn = True
 
         from ..engine import EventType
-        self.game.emit(EventType.JUDGMENT, player, p.ruler)
+        self.game.emit(EventType.JUDGMENT, player, source)
 
         self.after_action(player)
         return True

@@ -108,6 +108,9 @@ class TriggerCondition(Enum):
     ABILITY_PLAYED = "ability_played"        # When an ability is played
     SPELL_RESOLVES = "spell_resolves"        # When a spell resolves
 
+    # Draw replacement-related triggers
+    DRAW_SKIPPED = "draw_skipped"            # When a draw is skipped by replacement
+
     # Judgment trigger
     JUDGMENT_PERFORMED = "judgment_performed"  # CR 705.3a-1
 

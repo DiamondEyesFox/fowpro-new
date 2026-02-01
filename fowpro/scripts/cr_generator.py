@@ -94,9 +94,11 @@ class CRScriptGenerator:
             '    Condition, ConditionType, ConditionBuilder,',
             '    ContinuousEffect, RulesEffect, EffectAction,',
             '    ModalAbility, IncarnationCost, AwakeningCost,',
+            '    ReplacementEffectCR, ReplacementEventType, ReplacementEffectResult,',
+            '    ReplacementBuilder,',
             '    CostPaymentModifier,',
             ')',
-            'from ...models import Attribute, WillCost',
+            'from ...models import Attribute, WillCost, Phase, Zone',
             '',
             '',
         ]
@@ -231,6 +233,7 @@ class CRScriptGenerator:
         attack_abilities = []
         activate_abilities = []
         continuous_abilities = []
+        replacement_abilities = []
         modal_abilities = []
         incarnation_abilities = []
         awakening_abilities = []
@@ -254,6 +257,10 @@ class CRScriptGenerator:
             # Check for special ability types first
             if ability.is_modal:
                 modal_abilities.append(ability)
+                continue
+
+            if getattr(ability, 'replacement_effects', None):
+                replacement_abilities.append(ability)
                 continue
 
             if ability.incarnation:
@@ -295,7 +302,7 @@ class CRScriptGenerator:
         # Generate initial_effect
         has_registered = False
         all_abilities = (enter_abilities + leave_abilities + attack_abilities +
-                        activate_abilities + continuous_abilities + modal_abilities +
+                        activate_abilities + continuous_abilities + replacement_abilities + modal_abilities +
                         incarnation_abilities + awakening_abilities + x_cost_abilities +
                         other_triggered_abilities + spell_effects)
 
@@ -374,6 +381,10 @@ class CRScriptGenerator:
                 kw_str = ' | '.join(f'KeywordAbility.{name}' for name in keyword_names)
                 lines.append(f'        return {kw_str}')
                 lines.append('')
+
+        # Generate replacement effects method if present
+        if replacement_abilities:
+            lines.extend(self._generate_replacement_effects(replacement_abilities))
 
         # Generate cost payment modifiers if needed
         if cost_modifiers:
@@ -653,6 +664,130 @@ class CRScriptGenerator:
                 lines.append(f'        # Complex continuous effect (needs manual implementation)')
                 lines.append(f'        # {self._escape_name(ability.raw_text, 70)}')
 
+        lines.append('')
+        return lines
+
+    def _generate_replacement_effects(self, abilities: List[ParsedAbility]) -> List[str]:
+        """Generate replacement effect registration method."""
+        lines = []
+        lines.append('    def get_replacement_effects(self, game, card):')
+        lines.append('        effects = []')
+        lines.append('        source_controller = card.controller')
+        lines.append('')
+
+        effect_idx = 0
+        for ability in abilities:
+            for repl in getattr(ability, 'replacement_effects', []) or []:
+                effect_idx += 1
+                event_type = repl.event_type
+                event_type_code = f'ReplacementEventType.{event_type}'
+
+                cond_parts = []
+                if 'not_draw_phase' in repl.condition_flags:
+                    cond_parts.append('game.current_phase != Phase.DRAW')
+                if 'event_player_is_controller' in repl.condition_flags:
+                    cond_parts.append('event_data.get("player") == source_controller')
+                cond_code = None
+                if cond_parts:
+                    cond_code = ' and '.join(cond_parts)
+
+                func_name = f'_repl_effect_{effect_idx}'
+                lines.append(f'        def {func_name}(game, affected_card, event_data, source_controller=source_controller):')
+                lines.append('            player = event_data.get("player", source_controller)')
+
+                if repl.may:
+                    lines.append('            if getattr(game, "_rules_engine", None) and game._rules_engine.choices:')
+                    lines.append(f'                if not game._rules_engine.request_yes_no(player, card, "{self._escape_name(repl.raw_text, 60)}"):')
+                    lines.append('                    return ReplacementEffectResult(was_replaced=False)')
+
+                if repl.replacement_kind == 'skip_draw':
+                    lines.append('            return ReplacementEffectResult(')
+                    lines.append('                was_replaced=True,')
+                    lines.append('                new_event_data={"skip_draw": True, "handled": True, "replacement_name": "skip draw"},')
+                    lines.append('                continue_chain=False,')
+                    lines.append('                prevent_original=True,')
+                    lines.append('            )')
+                elif repl.replacement_kind == 'look_pick_bottom':
+                    count = repl.replacement_params.get('count', 3)
+                    lines.append(f'            count = min({count}, len(game.players[player].main_deck))')
+                    lines.append('            if count <= 0:')
+                    lines.append('                return ReplacementEffectResult(')
+                    lines.append('                    was_replaced=True,')
+                    lines.append('                    new_event_data={"handled": True, "replacement_name": "look and pick"},')
+                    lines.append('                    continue_chain=False,')
+                    lines.append('                    prevent_original=True,')
+                    lines.append('                )')
+                    lines.append('            p = game.players[player]')
+                    lines.append('            top_cards = p.main_deck[:count]')
+                    lines.append('            p.main_deck = p.main_deck[count:]')
+                    lines.append('            chosen = []')
+                    lines.append('            if getattr(game, "_rules_engine", None) and game._rules_engine.choices:')
+                    lines.append('                chosen = game._rules_engine.choices.request_card_from_list(')
+                    lines.append('                    player, card, top_cards, count=1, up_to=False,')
+                    lines.append('                    prompt="Choose a card to put into your hand"')
+                    lines.append('                )')
+                    lines.append('            if not chosen and top_cards:')
+                    lines.append('                chosen = [top_cards[0]]')
+                    lines.append('            if chosen:')
+                    lines.append('                game.move_card(chosen[0], Zone.HAND, player)')
+                    lines.append('            remaining = [c for c in top_cards if c not in chosen]')
+                    lines.append('            if remaining:')
+                    lines.append('                order = remaining')
+                    lines.append('                if getattr(game, "_rules_engine", None) and game._rules_engine.choices:')
+                    lines.append('                    order = game._rules_engine.choices.request_order(')
+                    lines.append('                        player, card, remaining,')
+                    lines.append('                        prompt="Put the rest on the bottom in any order"')
+                    lines.append('                    ) or remaining')
+                    lines.append('                for c in order:')
+                    lines.append('                    p.main_deck.append(c)')
+                    lines.append('            return ReplacementEffectResult(')
+                    lines.append('                was_replaced=True,')
+                    lines.append('                new_event_data={"handled": True, "replacement_name": "look and pick"},')
+                    lines.append('                continue_chain=False,')
+                    lines.append('                prevent_original=True,')
+                    lines.append('            )')
+                else:
+                    effect_strs = []
+                    for eff in repl.replacement_effects:
+                        code = self._effect_to_code(eff)
+                        if code:
+                            effect_strs.append(code)
+                    if effect_strs:
+                        lines.append('            effects = [')
+                        for code in effect_strs:
+                            lines.append(f'                {code},')
+                        lines.append('            ]')
+                        lines.append('            for eff in effects:')
+                        lines.append('                if isinstance(eff, list):')
+                        lines.append('                    for sub in eff:')
+                        lines.append('                        sub.execute(game, card, [], player, {})')
+                        lines.append('                else:')
+                        lines.append('                    eff.execute(game, card, [], player, {})')
+                        lines.append('            return ReplacementEffectResult(')
+                        lines.append('                was_replaced=True,')
+                        lines.append('                new_event_data={"handled": True, "replacement_name": "replacement"},')
+                        lines.append('                continue_chain=False,')
+                        lines.append('                prevent_original=True,')
+                        lines.append('            )')
+                    else:
+                        lines.append('            return ReplacementEffectResult(was_replaced=False)')
+
+                lines.append('')
+                lines.append('        effects.append(ReplacementEffectCR(')
+                lines.append(f'            name="{self._escape_name(repl.raw_text, 60)}",')
+                lines.append(f'            replaces={event_type_code},')
+                lines.append(f'            replacement={func_name},')
+                if repl.affects_self_only:
+                    lines.append('            affects_self_only=True,')
+                if repl.affects_source_controller_only and event_type != 'WOULD_DRAW':
+                    lines.append('            affects_source_controller_only=True,')
+                if cond_code:
+                    lines.append(f'            event_condition=lambda game, c, event_data, source_controller=source_controller: {cond_code},')
+                lines.append('            is_self_replacement=True,')
+                lines.append('        ))')
+                lines.append('')
+
+        lines.append('        return effects')
         lines.append('')
         return lines
 
@@ -1010,11 +1145,34 @@ class CRScriptGenerator:
         for i, choice in enumerate(ability.modal_choices):
             effect_code = self._effect_to_code(choice.effect) or 'None'
             safe_text = self._escape_name(choice.raw_text, 30)
-            choices_code.append(f'("{safe_text}", {effect_code})')
+            choices_code.append((safe_text, effect_code))
+
+        if ability.ability_type == AbilityType.AUTOMATIC and ability.trigger_condition:
+            lines.append(f'        modal_modes = [')
+            for safe_text, effect_code in choices_code:
+                lines.append(
+                    f'            Mode(name="{safe_text}", description="{safe_text}", '
+                    f'operation=lambda game, card, event_data, eff={effect_code}: '
+                    f'eff.execute(game, card, [], card.controller, {{}})),'
+                )
+            lines.append(f'        ]')
+            lines.append(f'        modal = ModalChoice(')
+            lines.append(f'            modes=modal_modes,')
+            lines.append(f'            choose_count={ability.modal_count},')
+            lines.append(f'            prompt="Choose one",')
+            lines.append(f'        )')
+            lines.append(f'        self.register_ability(AutomaticAbility(')
+            lines.append(f'            name="Modal Choice",')
+            lines.append(f'            trigger_condition=TriggerCondition.{ability.trigger_condition.name},')
+            lines.append(f'            modal=modal,')
+            lines.append(f'            is_mandatory={ability.is_mandatory},')
+            lines.append(f'        ))')
+            lines.append('')
+            return lines
 
         lines.append(f'        modal_choices = [')
-        for c in choices_code:
-            lines.append(f'            {c},')
+        for safe_text, effect_code in choices_code:
+            lines.append(f'            ("{safe_text}", {effect_code}),')
         lines.append(f'        ]')
 
         # Generate upgrade condition if present

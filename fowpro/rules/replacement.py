@@ -74,6 +74,9 @@ class ReplacementEffectResult:
     # Message for UI/logging
     message: str = ""
 
+    # Whether the original event should be skipped entirely
+    prevent_original: bool = False
+
 
 @dataclass
 class ReplacementEffect:
@@ -104,6 +107,9 @@ class ReplacementEffect:
     # The replacement function
     # Args: (game, original_card, event_data) -> ReplacementEffectResult
     replacement: Optional[Callable] = None
+
+    # Optional event-level condition (can inspect event_data)
+    event_condition: Optional[Callable[['GameEngine', Optional['Card'], Dict[str, Any]], bool]] = None
 
     # CR 910.4: Self-replacement can only apply once per event
     is_self_replacement: bool = False
@@ -142,6 +148,14 @@ class ReplacementEffect:
         # Check condition
         if self.condition:
             return self.condition.check(game, source, source.controller)
+
+        # Check event-level condition (if any)
+        if self.event_condition:
+            try:
+                if not self.event_condition(game, card, event_data):
+                    return False
+            except Exception:
+                return False
 
         return True
 
@@ -234,8 +248,8 @@ class ReplacementManager:
 
             # If multiple apply, affected player chooses (CR 910.3)
             if len(applicable) > 1:
-                affected_player = card.controller if card else 0
-                effect = self._choose_replacement(affected_player, applicable, card)
+                affected_player = card.controller if card else event_data.get('player', 0)
+                effect = self._choose_replacement(affected_player, applicable, card, event_data)
             else:
                 effect = applicable[0]
 
@@ -248,6 +262,9 @@ class ReplacementManager:
 
                 if not result.continue_chain:
                     break
+            else:
+                # Optional replacement was declined; do not loop forever
+                break
 
         return any_replaced, current_data
 
@@ -268,7 +285,8 @@ class ReplacementManager:
 
     def _choose_replacement(self, player: int,
                             effects: List[ReplacementEffect],
-                            source_card: Optional['Card'] = None) -> ReplacementEffect:
+                            source_card: Optional['Card'] = None,
+                            event_data: Optional[Dict[str, Any]] = None) -> ReplacementEffect:
         """
         Let player choose which replacement to apply first.
 
@@ -405,6 +423,8 @@ class ReplacementManager:
         )
 
         if replaced:
+            if new_data.get('handled'):
+                return 0
             return new_data.get('count', count)
 
         return count

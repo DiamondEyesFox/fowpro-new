@@ -1039,6 +1039,7 @@ class PlayerAreaWidget(QFrame):
         self.is_opponent = is_opponent
         self._stone_widgets = []
         self._resonator_widgets = []
+        self._resonator_stack_widgets = []
 
         self._setup_ui()
 
@@ -1199,7 +1200,7 @@ class PlayerAreaWidget(QFrame):
                 pos = self.ruler_widget.mapToGlobal(self.ruler_widget.rect().center())
                 self.card_context_menu.emit(card, "ruler", pos)
 
-    def _set_field_cards(self, stones: list, resonators: list):
+    def _set_field_cards(self, stones: list, resonators: list, j_ruler=None):
         """Update field with separate stone and resonator rows"""
         # Clear stones
         for widget in self._stone_widgets:
@@ -1212,6 +1213,10 @@ class PlayerAreaWidget(QFrame):
             widget.setParent(None)
             widget.deleteLater()
         self._resonator_widgets.clear()
+        for widget in self._resonator_stack_widgets:
+            widget.setParent(None)
+            widget.deleteLater()
+        self._resonator_stack_widgets.clear()
 
         # Add stone widgets (centered)
         insert_pos = 1  # After first stretch
@@ -1225,17 +1230,73 @@ class PlayerAreaWidget(QFrame):
             self._stone_widgets.append(widget)
             insert_pos += 1
 
-        # Add resonator widgets (centered)
-        insert_pos = 1
-        for card in resonators:
-            widget = DuelCardWidget(card, small=True)
-            widget.clicked.connect(lambda checked=False, c=card: self.card_clicked.emit(c, "resonator"))
-            widget.hovered.connect(self.card_hovered.emit)
-            widget.context_menu_requested.connect(
+        # Add J-ruler to field row on the left (large), if present
+        if j_ruler:
+            j_widget = DuelCardWidget(j_ruler, small=False)
+            j_widget.clicked.connect(lambda checked=False, c=j_ruler: self.card_clicked.emit(c, "resonator"))
+            j_widget.hovered.connect(self.card_hovered.emit)
+            j_widget.context_menu_requested.connect(
                 lambda c, pos: self.card_context_menu.emit(c, "resonator", pos))
-            self.resonators_layout.insertWidget(insert_pos, widget)
-            self._resonator_widgets.append(widget)
+            # Insert after the leading stretch so overall row stays centered
+            self.resonators_layout.insertWidget(1, j_widget)
+            self._resonator_widgets.append(j_widget)
+
+        # Add resonator widgets (centered)
+        insert_pos = 2 if j_ruler else 1
+        for card in resonators:
+            stack_widget, stack_cards = self._build_field_stack_widget(card)
+            for w in stack_cards:
+                self._resonator_widgets.append(w)
+            self.resonators_layout.insertWidget(insert_pos, stack_widget)
+            self._resonator_stack_widgets.append(stack_widget)
             insert_pos += 1
+
+    def _build_field_stack_widget(self, card):
+        """Build a stacked widget for a field card with its attachments underneath."""
+        container = QWidget()
+        # Oldest attachment should be most visible (on top of other additions).
+        attachments = list(reversed(getattr(card, "attachments", [])))
+
+        # Base (host) widget
+        host_widget = DuelCardWidget(card, small=True, parent=container)
+        host_widget.clicked.connect(lambda checked=False, c=card: self.card_clicked.emit(c, "resonator"))
+        host_widget.hovered.connect(self.card_hovered.emit)
+        host_widget.context_menu_requested.connect(
+            lambda c, pos: self.card_context_menu.emit(c, "resonator", pos))
+
+        host_w = host_widget.width()
+        host_h = host_widget.height()
+
+        peek = 18  # pixels to peek per attachment
+        total_h = host_h
+        total_w = host_w
+
+        attachment_widgets = []
+        for idx, add_card in enumerate(attachments):
+            att_widget = DuelCardWidget(add_card, small=True, parent=container)
+            att_widget.clicked.connect(lambda checked=False, c=add_card: self.card_clicked.emit(c, "resonator"))
+            att_widget.hovered.connect(self.card_hovered.emit)
+            att_widget.context_menu_requested.connect(
+                lambda c, pos: self.card_context_menu.emit(c, "resonator", pos))
+
+            # Position so each older attachment is higher (newer go underneath)
+            y = idx * peek
+            att_widget.move(0, y)
+            att_widget.show()
+
+            total_h = max(total_h, y + att_widget.height())
+            total_w = max(total_w, att_widget.width())
+            attachment_widgets.append(att_widget)
+
+        # Position host last so it sits above attachments (lowered by peek stack)
+        host_y = len(attachments) * peek
+        host_widget.move(0, host_y)
+        host_widget.raise_()
+        host_widget.show()
+
+        total_h = max(total_h, host_y + host_widget.height())
+        container.setFixedSize(total_w, total_h)
+        return container, [host_widget, *attachment_widgets]
 
     def update_from_state(self, player_state, hide_hand: bool = False):
         """Update display from player state"""
@@ -1245,23 +1306,40 @@ class PlayerAreaWidget(QFrame):
 
         self.will_pool_widget.set_will_pool(player_state.will_pool)
 
-        # Ruler
-        if player_state.j_ruler:
-            self.ruler_widget.set_card(player_state.j_ruler)
+        # Ruler (hide if J-ruler is on field)
+        from ..models import CardType
+        j_ruler_field = next((c for c in player_state.field
+                              if c.data and c.data.card_type == CardType.J_RULER), None)
+        j_ruler_card = player_state.j_ruler or j_ruler_field
+        if j_ruler_card:
+            self.ruler_widget.set_card(None)
+            self.ruler_widget.setVisible(False)
         elif player_state.ruler:
             self.ruler_widget.set_card(player_state.ruler)
+            self.ruler_widget.setVisible(True)
         else:
             self.ruler_widget.set_card(None)
+            self.ruler_widget.setVisible(True)
 
         # Separate field into stones and resonators
         from ..models import CardType
         stones = [c for c in player_state.field if c.data.is_stone()]
-        resonators = [c for c in player_state.field if c.data.card_type == CardType.RESONATOR]
-        other = [c for c in player_state.field if not c.data.is_stone() and c.data.card_type != CardType.RESONATOR]
+        # Don't show attached cards as separate field items
+        def _is_attached(card):
+            return getattr(card, "attached_to", None) is not None
+
+        resonators = [
+            c for c in player_state.field
+            if c.data.card_type == CardType.RESONATOR and not _is_attached(c)
+        ]
+        other = [
+            c for c in player_state.field
+            if not c.data.is_stone() and c.data.card_type not in (CardType.RESONATOR, CardType.J_RULER) and not _is_attached(c)
+        ]
         # Add other permanents to resonator row for now
         resonators.extend(other)
 
-        self._set_field_cards(stones, resonators)
+        self._set_field_cards(stones, resonators, j_ruler=j_ruler_card)
 
         # Hand
         self.hand_zone.set_cards(player_state.hand, face_down=hide_hand)
@@ -1305,6 +1383,16 @@ class DuelScreen(QWidget):
         self._hand_choice_ok_btn = None
         self._hand_choice_label = None
 
+        # Target choice state (field selection)
+        self._target_choice_active = False
+        self._target_choice_allowed = []
+        self._target_choice_selected = []
+        self._target_choice_min = 1
+        self._target_choice_max = 1
+        self._target_choice_dialog = None
+        self._target_choice_ok_btn = None
+        self._target_choice_label = None
+
         # Lobby settings (from DuelLobbyDialog)
         self.opponent_autopass = False  # AI passes immediately without actions
         self.ai_delay = 300  # Delay in ms between AI actions
@@ -1342,6 +1430,7 @@ class DuelScreen(QWidget):
         center_zone = self._create_center_zone()
         center_zone.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         field_area.addWidget(center_zone)
+        self.center_zone = center_zone
 
         # Player area (larger - has hand zone, needs more space)
         self.player_area = PlayerAreaWidget(0)
@@ -1903,16 +1992,36 @@ class DuelScreen(QWidget):
         result = None
 
         if choice.choice_type == ChoiceType.TARGET:
-            dialog = TargetSelectionDialog(
-                choice.prompt,
-                choice.valid_targets,
-                choice.min_targets,
-                choice.max_targets,
-                lambda c: c.data.name if c.data else str(c),
-                self
-            )
-            if dialog.exec():
-                result = dialog.get_result()
+            if self._can_handle_target_choice(choice.valid_targets):
+                result = self._handle_target_choice_dialog(
+                    choice.prompt,
+                    choice.valid_targets,
+                    choice.min_targets,
+                    choice.max_targets,
+                )
+            else:
+                try:
+                    sample = choice.valid_targets[:3] if choice.valid_targets else []
+                    types = [type(t).__name__ for t in sample]
+                    has_uid = [hasattr(t, "uid") for t in sample]
+                    self._log(
+                        f"TargetSelectionDialog fallback ({__file__}): "
+                        f"count={len(choice.valid_targets) if choice.valid_targets else 0}, "
+                        f"types={types}, has_uid={has_uid}",
+                        Colors.WARNING,
+                    )
+                except Exception:
+                    pass
+                dialog = TargetSelectionDialog(
+                    choice.prompt,
+                    choice.valid_targets,
+                    choice.min_targets,
+                    choice.max_targets,
+                    lambda c: c.data.name if c.data else str(c),
+                    self
+                )
+                if dialog.exec():
+                    result = dialog.get_result()
 
         elif choice.choice_type == ChoiceType.MODAL:
             modes = []
@@ -2000,6 +2109,144 @@ class DuelScreen(QWidget):
                 result = dialog.get_result()
 
         return result
+
+    def _can_handle_target_choice(self, cards: list) -> bool:
+        """Return True if we can select targets directly on the field."""
+        if not cards:
+            return False
+        for c in cards:
+            if not hasattr(c, "uid"):
+                return False
+        return True
+
+    def _handle_target_choice_dialog(self, prompt: str, cards: list,
+                                     min_targets: int, max_targets: int) -> list:
+        """Enable field target selection with highlights and click-to-select."""
+        from PyQt6.QtCore import QEventLoop, Qt, QPoint
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Target")
+        dialog.setModal(False)
+        dialog.setWindowModality(Qt.WindowModality.NonModal)
+        dialog.setWindowFlags(dialog.windowFlags() | Qt.WindowType.Tool)
+        dialog.setMinimumWidth(360)
+        dialog_layout = QVBoxLayout(dialog)
+        dialog_layout.setContentsMargins(16, 16, 16, 16)
+        dialog_layout.setSpacing(8)
+
+        info_text = f"{prompt}\nSelect {min_targets}"
+        if max_targets > min_targets:
+            info_text += f"-{max_targets}"
+        info_text += " target(s)."
+
+        self._target_choice_label = QLabel(info_text)
+        self._target_choice_label.setWordWrap(True)
+        self._target_choice_label.setStyleSheet(f"color: {Colors.TEXT_SECONDARY};")
+        dialog_layout.addWidget(self._target_choice_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        btn_row.addWidget(ok_btn)
+        btn_row.addWidget(cancel_btn)
+        dialog_layout.addLayout(btn_row)
+
+        self._target_choice_active = True
+        self._target_choice_allowed = list(cards)
+        self._target_choice_selected = []
+        self._target_choice_min = max(0, min_targets)
+        self._target_choice_max = max(1, max_targets)
+        self._target_choice_dialog = dialog
+        self._target_choice_ok_btn = ok_btn
+
+        self._refresh_target_choice_highlights()
+        self._log(f"Target selection: click cards on the field (yellow = valid). [{__file__}]", Colors.INFO)
+
+        def _update_ok():
+            ok_btn.setEnabled(len(self._target_choice_selected) >= self._target_choice_min)
+
+        _update_ok()
+
+        def _accept():
+            dialog.accept()
+
+        def _cancel():
+            dialog.reject()
+
+        ok_btn.clicked.connect(_accept)
+        cancel_btn.clicked.connect(_cancel)
+
+        loop = QEventLoop()
+        result = []
+
+        def finish(accepted: bool):
+            nonlocal result
+            if accepted:
+                result = list(self._target_choice_selected)
+            self._clear_target_choice_state()
+            loop.quit()
+
+        dialog.accepted.connect(lambda: finish(True))
+        dialog.rejected.connect(lambda: finish(False))
+        dialog.show()
+        dialog.adjustSize()
+        # Center the dialog within the phase/combat bar.
+        try:
+            if getattr(self, "center_zone", None):
+                bar_rect = self.center_zone.geometry()
+                bar_top_left = self.center_zone.mapToGlobal(QPoint(0, 0))
+                x = bar_top_left.x() + (bar_rect.width() - dialog.width()) // 2
+                y = bar_top_left.y() + (bar_rect.height() - dialog.height()) // 2
+                dialog.move(x, y)
+        except Exception:
+            pass
+
+        loop.exec()
+        return result
+
+    def _iter_card_widgets(self):
+        """Yield all DuelCardWidget instances currently on the board."""
+        for area in (self.player_area, self.opponent_area):
+            if not area:
+                continue
+            if getattr(area, "ruler_widget", None):
+                yield area.ruler_widget
+            for w in getattr(area, "_stone_widgets", []):
+                yield w
+            for w in getattr(area, "_resonator_widgets", []):
+                yield w
+
+    def _refresh_target_choice_highlights(self):
+        """Highlight valid/selected targets on the field."""
+        allowed = {c.uid for c in self._target_choice_allowed}
+        selected = {c.uid for c in self._target_choice_selected}
+
+        for widget in self._iter_card_widgets():
+            card = getattr(widget, "card", None)
+            if not card:
+                widget.set_highlight(None)
+                continue
+            if card.uid in selected:
+                widget.set_highlight(Colors.SUCCESS)
+            elif card.uid in allowed:
+                widget.set_highlight(Colors.ACCENT)
+            else:
+                widget.set_highlight(None)
+
+    def _clear_target_choice_state(self):
+        """Reset target choice state and highlights."""
+        self._target_choice_active = False
+        self._target_choice_allowed = []
+        self._target_choice_selected = []
+        self._target_choice_min = 1
+        self._target_choice_max = 1
+        if self._target_choice_dialog:
+            self._target_choice_dialog.close()
+        self._target_choice_dialog = None
+        self._target_choice_ok_btn = None
+        self._target_choice_label = None
+        self._refresh_target_choice_highlights()
 
     def _handle_mulligan(self, player: int):
         """Handle a single mulligan for the human player based on ruleset."""
@@ -2341,6 +2588,8 @@ class DuelScreen(QWidget):
         # Re-apply hand choice highlights if active
         if self._hand_choice_active:
             self._refresh_hand_choice_highlights()
+        if self._target_choice_active:
+            self._refresh_target_choice_highlights()
 
         # Update button states
         self._update_buttons()
@@ -2482,12 +2731,7 @@ class DuelScreen(QWidget):
                     still_meaningful = True
                     break
                 ability = abilities[idx]
-                try:
-                    from ..rules import AbilityType
-                    if ability.ability_type != AbilityType.WILL:
-                        still_meaningful = True
-                        break
-                except Exception:
+                if not self._is_will_ability(ability):
                     still_meaningful = True
                     break
 
@@ -2508,9 +2752,36 @@ class DuelScreen(QWidget):
 
         return True
 
+    def _is_will_ability(self, ability) -> bool:
+        """Return True if an activated ability is a will/mana ability."""
+        try:
+            from ..rules import AbilityType
+            if getattr(ability, "ability_type", None) == AbilityType.WILL:
+                return True
+        except Exception:
+            pass
+        # Check timing/category hints
+        try:
+            if getattr(ability, "timing", None) is not None:
+                from ..rules import EffectTiming
+                if ability.timing == EffectTiming.WILL_SPEED:
+                    return True
+        except Exception:
+            pass
+        # Check if any effect produces will
+        try:
+            from ..rules import EffectAction
+            effects = getattr(ability, "effects", []) or []
+            for eff in effects:
+                if getattr(eff, "action", None) == EffectAction.PRODUCE_WILL:
+                    return True
+        except Exception:
+            pass
+        return False
+
     def _could_play_any_card(self, instant_only: bool = False) -> bool:
         """Check if any card in hand could be played with current will + untapped sources."""
-        from ..models import Attribute
+        from ..models import Attribute, Keyword
         if not self.engine:
             return False
 
@@ -2533,10 +2804,15 @@ class DuelScreen(QWidget):
                 colors = self.engine.get_will_colors(card)
                 for color in colors:
                     available_colors[color] = available_colors.get(color, 0) + 1
-            # Add untapped mana creatures
+            # Add untapped mana creatures (respect summoning sickness for tap abilities)
             elif card.data.is_resonator() and not card.is_rested:
                 colors = self.engine.get_will_colors(card)
                 if colors:
+                    # If it just entered and lacks swiftness, assume it can't tap for will
+                    if card.entered_turn == self.engine.turn_number:
+                        from ..models import Keyword
+                        if not card.has_keyword(Keyword.SWIFTNESS):
+                            continue
                     total_will += 1
                     for color in colors:
                         available_colors[color] = available_colors.get(color, 0) + 1
@@ -2546,8 +2822,10 @@ class DuelScreen(QWidget):
 
         # Check each card in hand
         for card in p.hand:
-            if instant_only and not card.data.is_instant():
-                continue
+            if instant_only:
+                is_quickcast = card.has_keyword(Keyword.QUICKCAST)
+                if not (card.data.is_instant() or is_quickcast):
+                    continue
             cost = card.data.cost
             if cost.total > total_will:
                 continue  # Not enough will total
@@ -2708,6 +2986,25 @@ class DuelScreen(QWidget):
                         )
             return
 
+        if self._target_choice_active:
+            if card and any(card.uid == c.uid for c in self._target_choice_allowed):
+                if card in self._target_choice_selected:
+                    self._target_choice_selected.remove(card)
+                else:
+                    if len(self._target_choice_selected) >= self._target_choice_max:
+                        self._target_choice_selected.pop(0)
+                    self._target_choice_selected.append(card)
+                self._refresh_target_choice_highlights()
+                if self._target_choice_label:
+                    self._target_choice_label.setText(
+                        f"Selected: {len(self._target_choice_selected)}/{self._target_choice_min}"
+                    )
+                if self._target_choice_ok_btn:
+                    self._target_choice_ok_btn.setEnabled(
+                        len(self._target_choice_selected) >= self._target_choice_min
+                    )
+            return
+
         # Try actions based on zone
         if zone == "hand":
             self._try_play_card(card)
@@ -2725,6 +3022,10 @@ class DuelScreen(QWidget):
                 else:
                     self._try_produce_will(card)
             elif card.data.is_resonator() or card.data.card_type.value == "J-Ruler":
+                if card.data.card_type.value == "J-Ruler":
+                    from PyQt6.QtGui import QCursor
+                    self._show_card_context_menu(card, "resonator", QCursor.pos())
+                    return
                 # Check if this resonator can produce will (like Elvish Priest)
                 script = self.engine.get_script(card)
                 will_colors = script.get_will_colors(self.engine, card)
@@ -2843,10 +3144,22 @@ class DuelScreen(QWidget):
             elif zone == "resonator":
                 # Field resonators: Attack, Rest/Recover, Abilities
                 if not card.is_rested:
-                    # Can attack if it's battle phase and has valid targets
+                    # J-Ruler can call stone
+                    if card.data.card_type.value == "J-Ruler":
+                        call_action = menu.addAction("Call Stone")
+                        can_call = (has_priority and len(player.stone_deck) > 0 and
+                                    not player.has_called_stone and
+                                    not player.has_judged_this_turn and
+                                    self.engine.turn_player == self.human_player and
+                                    self.engine.current_phase.name == "MAIN" and
+                                    not card.is_rested)
+                        call_action.setEnabled(can_call)
+                        call_action.triggered.connect(self._on_call_stone)
+
+                    # Can attack during MAIN (FoW attacks happen in main phase)
                     attack_action = menu.addAction("Attack")
                     can_attack = (has_priority and
-                                  self.engine.current_phase.name == "BATTLE" and
+                                  self.engine.current_phase.name == "MAIN" and
                                   not card.is_rested)
                     attack_action.setEnabled(can_attack)
                     attack_action.triggered.connect(lambda: self._try_attack(card))
@@ -2869,14 +3182,31 @@ class DuelScreen(QWidget):
                 # Call Stone (if ruler is untapped)
                 if not ruler.is_rested:
                     call_action = menu.addAction("Call Stone")
-                    can_call = has_priority and len(player.stone_deck) > 0 and not player.called_stone_this_turn
+                    can_call = has_priority and len(player.stone_deck) > 0 and not player.has_called_stone
                     call_action.setEnabled(can_call)
                     call_action.triggered.connect(self._on_call_stone)
 
-                # Judgment (if ruler has judgment cost and isn't already J-Ruler)
-                if hasattr(ruler.data, 'judgment_cost') and ruler.data.judgment_cost:
+                # Judgment (if ruler can J-Rule; cost may be parsed from text)
+                if (getattr(ruler.data, 'judgment_cost', None) is not None or
+                        getattr(ruler.data, 'j_ruler_code', "")):
                     judgment_action = menu.addAction("Judgment")
-                    can_judge = has_priority and not player.j_ruler
+                    can_judge, _, cost = self.engine._can_perform_judgment(self.human_player)
+                    if can_judge and cost:
+                        if not self.engine.players[self.human_player].will_pool.can_pay(cost):
+                            can_judge = self._can_pay_with_sources(cost)
+                    can_judge = has_priority and can_judge
+                    try:
+                        print(
+                            f"[JUDGMENT_MENU] has_priority={has_priority} "
+                            f"turn_player={self.engine.turn_player} phase={self.engine.current_phase.name} "
+                            f"in_battle={getattr(self.engine.battle, 'in_battle', False)} "
+                            f"ruler_rested={ruler.is_rested} "
+                            f"judged_turn={self.engine.players[self.human_player].has_judged_this_turn} "
+                            f"has_j_ruled={self.engine.players[self.human_player].has_j_ruled} "
+                            f"cost={cost} can_judge={can_judge}"
+                        )
+                    except Exception:
+                        pass
                     judgment_action.setEnabled(can_judge)
                     judgment_action.triggered.connect(self._try_judgment)
 
@@ -3592,21 +3922,68 @@ class DuelScreen(QWidget):
 
     def _try_judgment(self):
         """Try to perform Judgment"""
-        p = self.engine.players[self.human_player]
-        ruler = p.ruler
-        if not ruler or not ruler.data.judgment_cost:
-            self._log("No Judgment cost on ruler", Colors.WARNING)
+        ok, source, cost = self.engine._can_perform_judgment(self.human_player)
+        if not ok or not source:
+            self._log("Cannot perform Judgment", Colors.ERROR)
             return
 
-        if not p.will_pool.can_pay(ruler.data.judgment_cost):
-            self._log(f"Not enough will for Judgment (need {ruler.data.judgment_cost})", Colors.WARNING)
-            return
+        if cost and not self.engine.players[self.human_player].will_pool.can_pay(cost):
+            if not self._auto_tap_for_cost(cost):
+                self._log(f"Not enough will for Judgment (need {cost})", Colors.WARNING)
+                return
 
         if self.engine.perform_judgment(self.human_player):
             self._log("Judgment!", Colors.ACCENT)
         else:
             self._log("Cannot perform Judgment", Colors.ERROR)
         self._update_display()
+
+    def _can_pay_with_sources(self, cost) -> bool:
+        """Check if a cost can be paid using current will + untapped sources."""
+        from ..models import Attribute, Keyword
+        p = self.engine.players[self.human_player]
+
+        available_colors = {
+            Attribute.LIGHT: p.will_pool.light,
+            Attribute.FIRE: p.will_pool.fire,
+            Attribute.WATER: p.will_pool.water,
+            Attribute.WIND: p.will_pool.wind,
+            Attribute.DARKNESS: p.will_pool.darkness,
+        }
+        total_will = p.will_pool.total
+
+        for card in p.field:
+            if card.data.is_stone() and not card.is_rested:
+                total_will += 1
+                colors = self.engine.get_will_colors(card)
+                for color in colors:
+                    available_colors[color] = available_colors.get(color, 0) + 1
+            elif card.data.is_resonator() and not card.is_rested:
+                colors = self.engine.get_will_colors(card)
+                if colors:
+                    # Respect summoning sickness for tap abilities
+                    if card.entered_turn == self.engine.turn_number:
+                        if not card.has_keyword(Keyword.SWIFTNESS):
+                            continue
+                    total_will += 1
+                    for color in colors:
+                        available_colors[color] = available_colors.get(color, 0) + 1
+
+        if total_will < cost.total:
+            return False
+
+        color_requirements = {
+            Attribute.LIGHT: cost.light,
+            Attribute.FIRE: cost.fire,
+            Attribute.WATER: cost.water,
+            Attribute.WIND: cost.wind,
+            Attribute.DARKNESS: cost.darkness,
+        }
+        for attr, needed in color_requirements.items():
+            if needed > 0 and available_colors.get(attr, 0) < needed:
+                return False
+
+        return True
 
     def _on_pass(self):
         """Pass priority"""

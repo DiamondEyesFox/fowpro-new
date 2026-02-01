@@ -353,6 +353,19 @@ class AutomaticAbility(Ability):
         # Decrease trigger count
         self.trigger_count -= 1
 
+        # Handle modal choices if present
+        if self.modal:
+            selected_indices = choices.get('modal_choices')
+            if selected_indices is None and getattr(game, "_rules_engine", None):
+                selected_indices = game._rules_engine.request_modal_choice(player, card, self.modal)
+            if selected_indices is None:
+                selected_indices = [0]
+            for idx in selected_indices:
+                if 0 <= idx < len(self.modal.modes):
+                    mode = self.modal.modes[idx]
+                    mode.operation(game, card, {'player': player})
+            return True
+
         # Execute effects
         if not self.effects:
             logger.warning(

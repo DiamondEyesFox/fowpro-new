@@ -106,6 +106,20 @@ class ParsedEffect:
 
 
 @dataclass
+class ParsedReplacementEffect:
+    """Parsed replacement effect information."""
+    event_type: str
+    affects_self_only: bool = False
+    affects_source_controller_only: bool = False
+    may: bool = False
+    condition_flags: List[str] = field(default_factory=list)
+    replacement_kind: str = ""
+    replacement_params: Dict[str, Any] = field(default_factory=dict)
+    replacement_effects: List[ParsedEffect] = field(default_factory=list)
+    raw_text: str = ""
+
+
+@dataclass
 class ParsedAbility:
     """Parsed ability structure matching CR types."""
     ability_type: AbilityType
@@ -136,6 +150,8 @@ class ParsedAbility:
     judgment_cost: Optional['ParsedCost'] = None  # Cost for Judgment (rulers only)
     # Cost payment modifiers (CR 402)
     cost_modifiers: List['ParsedCostModifier'] = field(default_factory=list)
+    # Replacement effects (CR 910)
+    replacement_effects: List['ParsedReplacementEffect'] = field(default_factory=list)
 
 
 # =============================================================================
@@ -242,6 +258,7 @@ class CRAbilityParser:
         r'whenever.*?becomes?\s+rested': TriggerCondition.RESTED,  # "becomes rested"
         r'when.*?put\s+into\s+a?\s*graveyard': TriggerCondition.PUT_INTO_GRAVEYARD,  # "put into a graveyard"
         r'when.*?goes?\s+to\s+(?:the\s+)?graveyard': TriggerCondition.PUT_INTO_GRAVEYARD,  # "goes to graveyard"
+        r'when\s+you\s+skip\s+drawing': TriggerCondition.DRAW_SKIPPED,
     }
 
     # Will symbol mapping
@@ -489,6 +506,15 @@ class CRAbilityParser:
         # Parse effects
         ability.effects = self._parse_effects(effect_text.lower())
 
+        # Parse replacement effects (CR 910)
+        replacements = self._parse_replacement_effects(effect_text)
+        if replacements:
+            ability.replacement_effects = replacements
+            # Replacement effects are continuous by nature
+            ability.ability_type = AbilityType.CONTINUOUS
+            # Clear normal effects to avoid double-handling
+            ability.effects = []
+
         # Parse cost payment modifiers (continuous effects that alter payment rules)
         cost_mod = self._parse_cost_payment_modifier(effect_text.lower())
         if cost_mod:
@@ -528,7 +554,8 @@ class CRAbilityParser:
             ability.trigger_condition or
             ability.cost or
             ability.j_ruler_only or
-            ability.cost_modifiers
+            ability.cost_modifiers or
+            ability.replacement_effects
         )
         return ability if has_content else None
 
@@ -1413,6 +1440,103 @@ class CRAbilityParser:
 
         return effects
 
+    def _parse_replacement_effects(self, text: str) -> List[ParsedReplacementEffect]:
+        """Parse replacement effects of the form 'If X would Y, Z instead.'"""
+        replacements: List[ParsedReplacementEffect] = []
+        text_lower = text.lower()
+        if "would" not in text_lower or "instead" not in text_lower:
+            return replacements
+
+        pattern = re.compile(
+            r'if\s+(.+?)\s+would\s+(.+?)(?:,|\.)\s*(.+?)\s+instead',
+            re.IGNORECASE
+        )
+
+        for match in pattern.finditer(text):
+            subject = match.group(1).strip()
+            would_clause = match.group(2).strip()
+            replacement_clause = match.group(3).strip()
+
+            may = False
+            repl_lower = replacement_clause.lower()
+            if repl_lower.startswith("you may "):
+                may = True
+                replacement_clause = replacement_clause[8:].strip()
+                repl_lower = replacement_clause.lower()
+            elif repl_lower.startswith("may "):
+                may = True
+                replacement_clause = replacement_clause[4:].strip()
+                repl_lower = replacement_clause.lower()
+
+            event_type = None
+            would_lower = would_clause.lower()
+            if "draw" in would_lower:
+                event_type = "WOULD_DRAW"
+            elif "be destroyed" in would_lower:
+                event_type = "WOULD_BE_DESTROYED"
+            elif "be put into" in would_lower and "graveyard" in would_lower:
+                event_type = "WOULD_ENTER_GRAVEYARD"
+            elif "leave the field" in would_lower:
+                event_type = "WOULD_LEAVE_FIELD"
+            elif "be removed" in would_lower:
+                event_type = "WOULD_BE_REMOVED"
+            elif "be dealt damage" in would_lower or "take damage" in would_lower:
+                event_type = "WOULD_TAKE_DAMAGE"
+            elif "deal damage" in would_lower:
+                event_type = "WOULD_DEAL_DAMAGE"
+            elif "gain life" in would_lower:
+                event_type = "WOULD_GAIN_LIFE"
+            elif "lose life" in would_lower:
+                event_type = "WOULD_LOSE_LIFE"
+            elif "rest" in would_lower:
+                event_type = "WOULD_REST"
+            elif "recover" in would_lower:
+                event_type = "WOULD_RECOVER"
+
+            if not event_type:
+                continue
+
+            affects_self_only = "this card" in subject.lower()
+            affects_source_controller_only = ("you" in subject.lower() or "your" in subject.lower())
+
+            condition_flags: List[str] = []
+            if re.search(r'phase\s+other\s+than\s+draw', text_lower):
+                condition_flags.append("not_draw_phase")
+            if "you" in subject.lower() or "your" in subject.lower():
+                condition_flags.append("event_player_is_controller")
+
+            replacement_kind = ""
+            replacement_params: Dict[str, Any] = {}
+            replacement_effects: List[ParsedEffect] = []
+
+            if re.search(r'skip\s+drawing', repl_lower):
+                replacement_kind = "skip_draw"
+            else:
+                look_match = re.search(
+                    r'look\s+at\s+the\s+top\s+(\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+'
+                    r'cards?.*?put\s+one.*?into\s+your\s+hand.*?rest.*?bottom',
+                    repl_lower
+                )
+                if look_match:
+                    replacement_kind = "look_pick_bottom"
+                    replacement_params["count"] = self._word_to_number(look_match.group(1))
+                else:
+                    replacement_effects = self._parse_effects(replacement_clause)
+
+            replacements.append(ParsedReplacementEffect(
+                event_type=event_type,
+                affects_self_only=affects_self_only,
+                affects_source_controller_only=affects_source_controller_only,
+                may=may,
+                condition_flags=condition_flags,
+                replacement_kind=replacement_kind,
+                replacement_params=replacement_params,
+                replacement_effects=replacement_effects,
+                raw_text=match.group(0),
+            ))
+
+        return replacements
+
     def _parse_target_phrase(self, phrase: str) -> ParsedTarget:
         """Parse a target description phrase."""
         target = ParsedTarget()
@@ -1519,13 +1643,19 @@ class CRAbilityParser:
             return None
 
         ability = ParsedAbility(
-            ability_type=AbilityType.ACTIVATE,  # Modal spells are usually activated
+            ability_type=AbilityType.ACTIVATE,  # Modal abilities default to activated
             name="Modal Choice",
             is_modal=True,
             modal_choices=choices,
             modal_count=modal_count,
             raw_text=text,
         )
+
+        # If this modal text includes a trigger condition, treat as automatic
+        trigger_cond = self._parse_trigger_condition(text_lower)
+        if trigger_cond:
+            ability.ability_type = AbilityType.AUTOMATIC
+            ability.trigger_condition = trigger_cond
 
         if upgrade_condition:
             ability.modal_upgrade_condition = upgrade_condition.strip()

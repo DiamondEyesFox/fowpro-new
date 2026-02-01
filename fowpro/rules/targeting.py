@@ -114,10 +114,40 @@ class TargetFilter:
         # Check card type
         if self.card_types:
             card_type_str = card.data.card_type.value if card.data else None
-            if card_type_str not in self.card_types:
-                # Check for J/resonator
-                if "j_resonator" in self.card_types:
-                    if card_type_str not in ("resonator", "j_ruler"):
+            if card_type_str is None:
+                return False
+
+            def _norm_type(s: str) -> str:
+                s = s.strip().lower()
+                for ch in (":", "-", " "):
+                    s = s.replace(ch, "_")
+                while "__" in s:
+                    s = s.replace("__", "_")
+                return s
+
+            card_type_norm = _norm_type(card_type_str)
+            filter_types = {_norm_type(t) for t in self.card_types}
+
+            if card_type_norm not in filter_types:
+                # J/resonator grouping
+                if "j_resonator" in filter_types:
+                    if card_type_norm not in ("resonator", "j_ruler"):
+                        return False
+                # Addition grouping
+                elif "addition" in filter_types:
+                    if not card_type_norm.startswith("addition_"):
+                        return False
+                # Magic stone grouping
+                elif "magic_stone" in filter_types:
+                    if card_type_norm not in ("magic_stone", "special_magic_stone"):
+                        return False
+                # Spell grouping
+                elif "spell" in filter_types:
+                    if not card_type_norm.startswith("spell_chant"):
+                        return False
+                # Ruler grouping
+                elif "ruler" in filter_types:
+                    if card_type_norm not in ("ruler", "j_ruler"):
                         return False
                 else:
                     return False
@@ -169,7 +199,7 @@ class TargetFilter:
 
         # Check total cost
         if card.data and card.data.cost:
-            total_cost = card.data.cost.total()
+            total_cost = card.data.cost.total
             if self.min_total_cost is not None and total_cost < self.min_total_cost:
                 return False
             if self.max_total_cost is not None and total_cost > self.max_total_cost:
@@ -211,9 +241,13 @@ class TargetFilter:
 
         # Check barrier (CR 1120)
         if self.can_be_targeted:
-            if card.has_keyword_by_name("barrier"):
-                if controller != source_controller:
-                    return False
+            try:
+                has_barrier = card.has_keyword_by_name("barrier")
+            except AttributeError:
+                from ..models import Keyword
+                has_barrier = card.has_keyword(Keyword.BARRIER)
+            if has_barrier and controller != source_controller:
+                return False
 
         # Custom filter
         if self.custom_filter:

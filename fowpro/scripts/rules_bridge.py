@@ -28,13 +28,16 @@ from ..rules import (
     # Modals
     ModalChoice, Mode, ModalPatterns,
     # Effects
-    Effect as RulesEffect, ContinuousEffect, ReplacementEffect, EffectBuilder,
+    Effect as RulesEffect, ContinuousEffect, ReplacementEffect as ReplacementEffectCR, EffectBuilder,
     # Abilities
     Ability, ActivateAbility, AutomaticAbility, ContinuousAbility, WillAbility,
     JudgmentAbility, ModalAbility, IncarnationCost, AwakeningCost,
     AbilityFactory,
     CostPaymentModifier,
 )
+
+# Replacement system (CR 910)
+from ..rules import ReplacementEventType, ReplacementEffectResult, ReplacementBuilder
 
 # Import old system for compatibility
 from . import Effect as OldEffect, EffectType as OldEffectType, EffectTiming as OldEffectTiming
@@ -220,6 +223,10 @@ class RulesCardScript(ABC):
     def get_effects(self) -> List[OldEffect]:
         """Get all registered effects in old format (for engine compatibility)."""
         return self._old_effects
+
+    def get_replacement_effects(self, game: 'GameEngine', card: 'Card') -> List[ReplacementEffectCR]:
+        """Override to provide CR replacement effects from this card."""
+        return []
 
     def get_abilities(self) -> List[Ability]:
         """Get all registered CR-compliant abilities."""
@@ -539,7 +546,8 @@ __all__ = [
     'TargetRequirement', 'TargetFilter', 'TargetZone', 'TargetController', 'CommonFilters',
     'Condition', 'ConditionType', 'ConditionOperator', 'ConditionBuilder',
     'ModalChoice', 'Mode', 'ModalPatterns',
-    'RulesEffect', 'ContinuousEffect', 'ReplacementEffect', 'EffectBuilder',
+    'RulesEffect', 'ContinuousEffect', 'ReplacementEffectCR', 'ReplacementEventType',
+    'ReplacementEffectResult', 'ReplacementBuilder', 'EffectBuilder',
     'Ability', 'ActivateAbility', 'AutomaticAbility', 'ContinuousAbility', 'WillAbility',
     'AbilityFactory',
     'CostPaymentModifier',

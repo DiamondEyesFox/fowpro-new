@@ -15,9 +15,11 @@ from ..rules_bridge import (
     Condition, ConditionType, ConditionBuilder,
     ContinuousEffect, RulesEffect, EffectAction,
     ModalAbility, IncarnationCost, AwakeningCost,
+    ReplacementEffectCR, ReplacementEventType, ReplacementEffectResult,
+    ReplacementBuilder,
     CostPaymentModifier,
 )
-from ...models import Attribute, WillCost
+from ...models import Attribute, WillCost, Phase, Zone
 
 
 @ScriptRegistry.register("MPR-001")
@@ -298,9 +300,37 @@ class RagnarokTheDivineSwordOfSavior(RulesCardScript):
             name="Added J/resonator gains [+500/",
         ))
 
-        # [Continuous] ability
-        effects = [EffectBuilder.remove_from_game()]
 
+    def get_replacement_effects(self, game, card):
+        effects = []
+        source_controller = card.controller
+
+        def _repl_effect_1(game, affected_card, event_data, source_controller=source_controller):
+            player = event_data.get("player", source_controller)
+            effects = [
+                EffectBuilder.remove_from_game(),
+            ]
+            for eff in effects:
+                if isinstance(eff, list):
+                    for sub in eff:
+                        sub.execute(game, card, [], player, {})
+                else:
+                    eff.execute(game, card, [], player, {})
+            return ReplacementEffectResult(
+                was_replaced=True,
+                new_event_data={"handled": True, "replacement_name": "replacement"},
+                continue_chain=False,
+                prevent_original=True,
+            )
+
+        effects.append(ReplacementEffectCR(
+            name="If a resonator dealt damage by added J/resonator would be pu",
+            replaces=ReplacementEventType.WOULD_ENTER_GRAVEYARD,
+            replacement=_repl_effect_1,
+            is_self_replacement=True,
+        ))
+
+        return effects
 
 
 
@@ -585,12 +615,41 @@ class BlazerTheEaterOfDimensions(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        effects = [EffectBuilder.remove_from_game()]
-
+        pass
 
     def get_keywords(self) -> KeywordAbility:
         return KeywordAbility.SWIFTNESS
+
+    def get_replacement_effects(self, game, card):
+        effects = []
+        source_controller = card.controller
+
+        def _repl_effect_1(game, affected_card, event_data, source_controller=source_controller):
+            player = event_data.get("player", source_controller)
+            effects = [
+                EffectBuilder.remove_from_game(),
+            ]
+            for eff in effects:
+                if isinstance(eff, list):
+                    for sub in eff:
+                        sub.execute(game, card, [], player, {})
+                else:
+                    eff.execute(game, card, [], player, {})
+            return ReplacementEffectResult(
+                was_replaced=True,
+                new_event_data={"handled": True, "replacement_name": "replacement"},
+                continue_chain=False,
+                prevent_original=True,
+            )
+
+        effects.append(ReplacementEffectCR(
+            name="If a card would be put into a graveyard from anywhere, remov",
+            replaces=ReplacementEventType.WOULD_ENTER_GRAVEYARD,
+            replacement=_repl_effect_1,
+            is_self_replacement=True,
+        ))
+
+        return effects
 
 
 
@@ -1614,16 +1673,64 @@ class MorgianaTheWiseServant(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        effects = [
-            EffectBuilder.draw(1),
-            EffectBuilder.return_from_graveyard(),
-            EffectBuilder.rest(),
-            EffectBuilder.look(3),
-            EffectBuilder.put_on_bottom_of_deck(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        pass
 
+    def get_replacement_effects(self, game, card):
+        effects = []
+        source_controller = card.controller
+
+        def _repl_effect_1(game, affected_card, event_data, source_controller=source_controller):
+            player = event_data.get("player", source_controller)
+            if getattr(game, "_rules_engine", None) and game._rules_engine.choices:
+                if not game._rules_engine.request_yes_no(player, card, "If you would draw a card in a phase other than draw phase, y"):
+                    return ReplacementEffectResult(was_replaced=False)
+            count = min(3, len(game.players[player].main_deck))
+            if count <= 0:
+                return ReplacementEffectResult(
+                    was_replaced=True,
+                    new_event_data={"handled": True, "replacement_name": "look and pick"},
+                    continue_chain=False,
+                    prevent_original=True,
+                )
+            p = game.players[player]
+            top_cards = p.main_deck[:count]
+            p.main_deck = p.main_deck[count:]
+            chosen = []
+            if getattr(game, "_rules_engine", None) and game._rules_engine.choices:
+                chosen = game._rules_engine.choices.request_card_from_list(
+                    player, card, top_cards, count=1, up_to=False,
+                    prompt="Choose a card to put into your hand"
+                )
+            if not chosen and top_cards:
+                chosen = [top_cards[0]]
+            if chosen:
+                game.move_card(chosen[0], Zone.HAND, player)
+            remaining = [c for c in top_cards if c not in chosen]
+            if remaining:
+                order = remaining
+                if getattr(game, "_rules_engine", None) and game._rules_engine.choices:
+                    order = game._rules_engine.choices.request_order(
+                        player, card, remaining,
+                        prompt="Put the rest on the bottom in any order"
+                    ) or remaining
+                for c in order:
+                    p.main_deck.append(c)
+            return ReplacementEffectResult(
+                was_replaced=True,
+                new_event_data={"handled": True, "replacement_name": "look and pick"},
+                continue_chain=False,
+                prevent_original=True,
+            )
+
+        effects.append(ReplacementEffectCR(
+            name="If you would draw a card in a phase other than draw phase, y",
+            replaces=ReplacementEventType.WOULD_DRAW,
+            replacement=_repl_effect_1,
+            event_condition=lambda game, c, event_data, source_controller=source_controller: game.current_phase != Phase.DRAW and event_data.get("player") == source_controller,
+            is_self_replacement=True,
+        ))
+
+        return effects
 
 
 
@@ -1672,25 +1779,25 @@ class SinbadTheWindriderMerchant(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # Modal ability: Choose 1
-        modal_choices = [
-            ("this card deals 300 damage to ", EffectBuilder.deal_damage(300)),
-            ("target resonator gains [+400/+", EffectBuilder.buff(400, 400, EffectDuration.UNTIL_END_OF_TURN)),
-            ("destroy target addition.", EffectBuilder.destroy()),
+        modal_modes = [
+            Mode(name="this card deals 300 damage to ", description="this card deals 300 damage to ", operation=lambda game, card, event_data, eff=EffectBuilder.deal_damage(300): eff.execute(game, card, [], card.controller, {})),
+            Mode(name="target resonator gains [+400/+", description="target resonator gains [+400/+", operation=lambda game, card, event_data, eff=EffectBuilder.buff(400, 400, EffectDuration.UNTIL_END_OF_TURN): eff.execute(game, card, [], card.controller, {})),
+            Mode(name="destroy target addition.", description="destroy target addition.", operation=lambda game, card, event_data, eff=EffectBuilder.destroy(): eff.execute(game, card, [], card.controller, {})),
         ]
-        self.register_ability(ModalAbility(
-            name="Modal Choice",
-            choices=modal_choices,
+        modal = ModalChoice(
+            modes=modal_modes,
             choose_count=1,
+            prompt="Choose one",
+        )
+        self.register_ability(AutomaticAbility(
+            name="Modal Choice",
+            trigger_condition=TriggerCondition.DRAW_SKIPPED,
+            modal=modal,
+            is_mandatory=True,
         ))
 
         # [Continuous] ability
         effects = [EffectBuilder.grant_keyword(KeywordAbility.QUICKCAST)]
-
-        # [Continuous] ability
-        effects = [
-            EffectBuilder.draw(1),
-        ]
-        self.register_continuous_effect_with_effects(effects)
 
         # [Continuous] ability
         self.register_ability(AbilityFactory.continuous_buff(
@@ -1702,6 +1809,32 @@ class SinbadTheWindriderMerchant(RulesCardScript):
 
     def get_keywords(self) -> KeywordAbility:
         return KeywordAbility.QUICKCAST
+
+    def get_replacement_effects(self, game, card):
+        effects = []
+        source_controller = card.controller
+
+        def _repl_effect_1(game, affected_card, event_data, source_controller=source_controller):
+            player = event_data.get("player", source_controller)
+            if getattr(game, "_rules_engine", None) and game._rules_engine.choices:
+                if not game._rules_engine.request_yes_no(player, card, "If you would draw a card in a phase other than draw phase, y"):
+                    return ReplacementEffectResult(was_replaced=False)
+            return ReplacementEffectResult(
+                was_replaced=True,
+                new_event_data={"skip_draw": True, "handled": True, "replacement_name": "skip draw"},
+                continue_chain=False,
+                prevent_original=True,
+            )
+
+        effects.append(ReplacementEffectCR(
+            name="If you would draw a card in a phase other than draw phase, y",
+            replaces=ReplacementEventType.WOULD_DRAW,
+            replacement=_repl_effect_1,
+            event_condition=lambda game, c, event_data, source_controller=source_controller: game.current_phase != Phase.DRAW and event_data.get("player") == source_controller,
+            is_self_replacement=True,
+        ))
+
+        return effects
 
 
 

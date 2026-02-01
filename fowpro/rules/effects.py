@@ -171,7 +171,7 @@ class Effect:
                 target_player = 1 - player
             elif not isinstance(target_player, int):
                 target_player = player
-            game.players[target_player].life += amount
+            game.gain_life(target_player, amount, source)
             logger.debug(f"Effect: Player {target_player} gained {amount} life")
             return True
 
@@ -185,7 +185,7 @@ class Effect:
                 target_player = 1 - player
             elif not isinstance(target_player, int):
                 target_player = player
-            game.players[target_player].life -= amount
+            game.lose_life(target_player, amount, source)
             logger.debug(f"Effect: Player {target_player} lost {amount} life")
             return True
 

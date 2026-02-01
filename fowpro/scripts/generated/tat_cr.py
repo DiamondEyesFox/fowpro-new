@@ -15,9 +15,11 @@ from ..rules_bridge import (
     Condition, ConditionType, ConditionBuilder,
     ContinuousEffect, RulesEffect, EffectAction,
     ModalAbility, IncarnationCost, AwakeningCost,
+    ReplacementEffectCR, ReplacementEventType, ReplacementEffectResult,
+    ReplacementBuilder,
     CostPaymentModifier,
 )
-from ...models import Attribute, WillCost
+from ...models import Attribute, WillCost, Phase, Zone
 
 
 @ScriptRegistry.register("TAT-001")
@@ -469,13 +471,39 @@ class BeowulfTheBlazingWolf(RulesCardScript):
 
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
-        # [Continuous] ability
-        self.register_continuous_effect(ContinuousEffect(
-            name="Double Damage",
+        pass
+
+    def get_replacement_effects(self, game, card):
+        effects = []
+        source_controller = card.controller
+
+        def _repl_effect_1(game, affected_card, event_data, source_controller=source_controller):
+            player = event_data.get("player", source_controller)
+            effects = [
+                EffectBuilder.double_damage(),
+            ]
+            for eff in effects:
+                if isinstance(eff, list):
+                    for sub in eff:
+                        sub.execute(game, card, [], player, {})
+                else:
+                    eff.execute(game, card, [], player, {})
+            return ReplacementEffectResult(
+                was_replaced=True,
+                new_event_data={"handled": True, "replacement_name": "replacement"},
+                continue_chain=False,
+                prevent_original=True,
+            )
+
+        effects.append(ReplacementEffectCR(
+            name="If this card would deal damage to your opponent or to a reso",
+            replaces=ReplacementEventType.WOULD_DEAL_DAMAGE,
+            replacement=_repl_effect_1,
             affects_self_only=True,
-            # This card deals double damage
+            is_self_replacement=True,
         ))
 
+        return effects
 
 
 
@@ -732,6 +760,23 @@ class KusanagiSword(RulesCardScript):
             is_mandatory=True,
         ))
 
+
+    def get_replacement_effects(self, game, card):
+        effects = []
+        source_controller = card.controller
+
+        def _repl_effect_1(game, affected_card, event_data, source_controller=source_controller):
+            player = event_data.get("player", source_controller)
+            return ReplacementEffectResult(was_replaced=False)
+
+        effects.append(ReplacementEffectCR(
+            name="If resonator with this would deal damage, it deals that much",
+            replaces=ReplacementEventType.WOULD_DEAL_DAMAGE,
+            replacement=_repl_effect_1,
+            is_self_replacement=True,
+        ))
+
+        return effects
 
 
 
@@ -2055,14 +2100,42 @@ class Necronomicon(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [EffectBuilder.remove_from_game()]
-
-        # [Continuous] ability
         effects = [
             EffectBuilder.grant_ability(),
         ]
         self.register_continuous_effect_with_effects(effects)
 
+
+    def get_replacement_effects(self, game, card):
+        effects = []
+        source_controller = card.controller
+
+        def _repl_effect_1(game, affected_card, event_data, source_controller=source_controller):
+            player = event_data.get("player", source_controller)
+            effects = [
+                EffectBuilder.remove_from_game(),
+            ]
+            for eff in effects:
+                if isinstance(eff, list):
+                    for sub in eff:
+                        sub.execute(game, card, [], player, {})
+                else:
+                    eff.execute(game, card, [], player, {})
+            return ReplacementEffectResult(
+                was_replaced=True,
+                new_event_data={"handled": True, "replacement_name": "replacement"},
+                continue_chain=False,
+                prevent_original=True,
+            )
+
+        effects.append(ReplacementEffectCR(
+            name="If a card would be put into your graveyard from anywhere, re",
+            replaces=ReplacementEventType.WOULD_ENTER_GRAVEYARD,
+            replacement=_repl_effect_1,
+            is_self_replacement=True,
+        ))
+
+        return effects
 
 
 
@@ -2434,14 +2507,6 @@ class MilestTheGhostlyFlameStone(RulesCardScript):
             name="{Rest} : Produce{R} .",
             tap_cost=True,
             effects=[EffectBuilder.produce_will(Attribute.FIRE)],
-        ))
-
-        # [Activate] ability
-        self.register_ability(ActivateAbility(
-            name="{R} {Rest} : This turn, if target J/reso",
-            tap_cost=True,
-            will_cost=WillCost(fire=1),
-            effects=[],
         ))
 
 

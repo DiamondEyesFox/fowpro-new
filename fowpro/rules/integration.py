@@ -92,6 +92,7 @@ class RulesEngine:
             EventType.DAMAGE_DEALT: TriggerCond.DEALS_DAMAGE,
             EventType.TURN_START: TriggerCond.BEGINNING_OF_TURN,
             EventType.TURN_END: TriggerCond.END_OF_TURN,
+            EventType.DRAW_SKIPPED: TriggerCond.DRAW_SKIPPED,
         }
 
         trigger_cond = event_map.get(event_type)
@@ -232,6 +233,43 @@ class RulesEngine:
     def would_enter_graveyard(self, card: 'Card', from_zone):
         """Check replacement effects for graveyard entry."""
         return self.replacement.would_enter_graveyard(card, from_zone)
+
+    def would_draw(self, player: int, count: int) -> int:
+        """Check replacement effects for draw."""
+        event_data = {'player': player, 'count': count}
+        replaced, new_data = self.replacement.check_replacements(
+            ReplacementEventType.WOULD_DRAW, None, event_data
+        )
+        if replaced:
+            if new_data.get('skip_draw') or new_data.get('handled'):
+                self.game.emit(EventType.DRAW_SKIPPED, player, None, skipped=True)
+                return 0
+            return new_data.get('count', count)
+        return count
+
+    def would_gain_life(self, player: int, amount: int) -> int:
+        """Check replacement effects for life gain."""
+        event_data = {'player': player, 'amount': amount}
+        replaced, new_data = self.replacement.check_replacements(
+            ReplacementEventType.WOULD_GAIN_LIFE, None, event_data
+        )
+        if replaced:
+            if new_data.get('handled'):
+                return 0
+            return new_data.get('amount', amount)
+        return amount
+
+    def would_lose_life(self, player: int, amount: int) -> int:
+        """Check replacement effects for life loss."""
+        event_data = {'player': player, 'amount': amount}
+        replaced, new_data = self.replacement.check_replacements(
+            ReplacementEventType.WOULD_LOSE_LIFE, None, event_data
+        )
+        if replaced:
+            if new_data.get('handled'):
+                return 0
+            return new_data.get('amount', amount)
+        return amount
 
     # =========================================================================
     # ENHANCED TRIGGER SYSTEM

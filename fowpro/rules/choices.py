@@ -19,6 +19,7 @@ References:
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import TYPE_CHECKING, List, Optional, Dict, Callable, Any, Union, Tuple
+import logging
 
 if TYPE_CHECKING:
     from ..engine import GameEngine
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 from .targeting import TargetRequirement, TargetFilter
 from .modals import ModalChoice, Mode
 
+logger = logging.getLogger(__name__)
 
 class ChoiceType(Enum):
     """Types of choices players can make."""
@@ -391,13 +393,38 @@ class ChoiceManager:
             if req.filter:
                 for p in self.game.players:
                     for card in p.field:
-                        if req.filter.matches(card, card.controller, player):
+                        controller = card.controller
+                        if controller is None:
+                            controller = card.owner
+                        if req.filter.matches(card, controller, player):
                             if card not in valid:
                                 valid.append(card)
 
         # Calculate min/max
         min_targets = sum(r.count for r in requirements if not r.up_to)
         max_targets = sum(r.count for r in requirements)
+
+        if not valid:
+            try:
+                field_summary = []
+                for p_idx, p in enumerate(self.game.players):
+                    for c in p.field:
+                        cname = c.data.name if c.data else "Unknown"
+                        ctype = c.data.card_type.value if c.data and c.data.card_type else "None"
+                        field_summary.append(
+                            f"p{p_idx}:{cname}({ctype}) ctrl={c.controller} owner={c.owner}"
+                        )
+                msg = (
+                    "request_targets: no valid targets. prompt=%s filter_types=%s controllers=%s field=%s",
+                    prompt,
+                    [r.filter.card_types if r.filter else None for r in requirements],
+                    [r.filter.controllers if r.filter else None for r in requirements],
+                    field_summary,
+                )
+                logger.warning(*msg)
+                print(msg)
+            except Exception:
+                pass
 
         choice = self.create_choice(
             ChoiceType.TARGET,

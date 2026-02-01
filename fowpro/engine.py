@@ -63,6 +63,7 @@ class EventType(Enum):
 
     # Card movement
     CARD_DRAWN = auto()
+    DRAW_SKIPPED = auto()
     CARD_PLAYED = auto()
     CARD_MOVED = auto()
     CARD_DESTROYED = auto()
@@ -410,6 +411,14 @@ class GameEngine:
         from_zone = card.zone
         from_player = card.controller
 
+        # Replacement effects for graveyard entry (CR 910)
+        if to_zone == Zone.GRAVEYARD and self._rules_engine:
+            should_enter, new_zone = self._rules_engine.would_enter_graveyard(card, from_zone)
+            if not should_enter:
+                if new_zone:
+                    self.move_card(card, new_zone, to_player)
+                return
+
         # Remove from old zone
         old_zone = self.players[from_player].get_zone(from_zone)
         if card in old_zone:
@@ -591,6 +600,7 @@ class GameEngine:
         # Reset turn flags
         p.has_called_stone = False
         p.has_drawn_for_turn = False
+        p.has_judged_this_turn = False
 
         # Reset once-per-turn triggers at turn start
         if self._rules_engine:
@@ -1203,10 +1213,15 @@ class GameEngine:
         if not j_ruler_data:
             return
 
-        # Remove ruler from ruler area
-        p.ruler = None
+        # If source is the ruler, move it to J-ruler in the field.
+        # If source is a J-ruler (multi-form), replace it with the next form.
+        if ruler_card.data.card_type == CardType.RULER:
+            p.ruler = None
+        else:
+            if ruler_card in p.field:
+                p.field.remove(ruler_card)
 
-        # Create J-Ruler
+        # Create next J-Ruler form
         j_ruler = self.create_card(j_ruler_data, player_idx)
         j_ruler.zone = Zone.FIELD
         p.field.append(j_ruler)
@@ -1233,6 +1248,12 @@ class GameEngine:
         p = self.players[player]
         drawn = []
 
+        # Check replacement effects (CR 910)
+        if self._rules_engine:
+            count = self._rules_engine.would_draw(player, count)
+            if count <= 0:
+                return drawn
+
         for _ in range(count):
             if not p.main_deck:
                 # Deck out - player loses
@@ -1255,19 +1276,22 @@ class GameEngine:
         # Check conditions
         if p.has_called_stone:
             return False
+        if p.has_judged_this_turn:
+            return False
         if self.current_phase != Phase.MAIN:
             return False
         if player != self.turn_player:
             return False
         if not p.stone_deck:
             return False
-        # Ruler must be able to rest to call a stone
-        if not p.ruler or p.ruler.is_rested:
+        # Ruler or J-ruler must be able to rest to call a stone
+        caller = p.ruler if p.ruler else p.j_ruler
+        if not caller or caller.is_rested:
             return False
 
         # Rest the ruler
         logger.debug(f"call_stone: resting ruler")
-        p.ruler.rest()
+        caller.rest()
 
         # Call stone
         stone = p.stone_deck.pop(0)
@@ -1686,8 +1710,14 @@ class GameEngine:
             self._play_resonator(player, card)
         elif card.data.is_spell():
             self._play_spell(player, card, targets)
-        elif card.data.card_type in [CardType.ADDITION_FIELD, CardType.REGALIA]:
-            self._play_addition(player, card, targets)
+        elif card.data.card_type in [
+            CardType.ADDITION_FIELD,
+            CardType.ADDITION_RESONATOR,
+            CardType.ADDITION_RULER,
+            CardType.REGALIA,
+        ]:
+            if not self._play_addition(player, card, targets):
+                return False
 
         self.emit(EventType.CARD_PLAYED, player, card)
         return True
@@ -2064,57 +2094,145 @@ class GameEngine:
 
         self.add_to_chase(item)
 
-    def _play_addition(self, player: int, card: Card, targets: list = None):
-        """Play an addition"""
+    def _play_addition(self, player: int, card: Card, targets: list = None) -> bool:
+        """Play an addition. Returns True if placed, False if it fizzles."""
+        try:
+            print(f"_play_addition: {card.data.name} type={card.data.card_type} rules_engine={bool(self._rules_engine)} targets_in={len(targets) if targets else 0}")
+        except Exception:
+            pass
         # For field additions, just move to field
         if card.data.card_type == CardType.ADDITION_FIELD:
             self.move_card(card, Zone.FIELD, player)
+            return True
         elif card.data.card_type == CardType.ADDITION_RESONATOR:
             # Attach to target resonator
-            if targets and len(targets) > 0:
-                target = targets[0]
-                if isinstance(target, Card):
-                    self.move_card(card, Zone.FIELD, player)
-                    card.attached_to = target
-                    target.attachments.append(card)
+            if not targets and self._rules_engine:
+                try:
+                    from .rules.targeting import TargetRequirement, CommonFilters, TargetController
+                    req = TargetRequirement(count=1, filter=CommonFilters.j_resonator(TargetController.ANY))
+                    targets = self._rules_engine.request_targets(
+                        player, card, [req],
+                        prompt="Choose a resonator or J-ruler to attach"
+                    )
+                except Exception as e:
+                    try:
+                        import traceback
+                        print(f"_play_addition: request_targets failed for {card.data.name}: {e}")
+                        print(traceback.format_exc())
+                    except Exception:
+                        pass
+                    targets = None
 
-        self.give_priority(1 - player)
+            if not targets:
+                try:
+                    print(f"_play_addition: no targets for {card.data.name}")
+                except Exception:
+                    pass
+                return False
+
+            target = targets[0]
+            if isinstance(target, Card):
+                self.move_card(card, Zone.FIELD, player)
+                card.attached_to = target
+                target.attachments.append(card)
+                return True
+
+        elif card.data.card_type == CardType.ADDITION_RULER:
+            # Attach to your ruler/J-ruler
+            if not targets:
+                p = self.players[player]
+                if p.j_ruler:
+                    targets = [p.j_ruler]
+                elif p.ruler:
+                    targets = [p.ruler]
+
+            if not targets:
+                return False
+
+            target = targets[0]
+            if isinstance(target, Card):
+                self.move_card(card, Zone.FIELD, player)
+                card.attached_to = target
+                target.attachments.append(card)
+                return True
+
+        return False
 
     def perform_judgment(self, player: int) -> bool:
         """Perform Judgment with ruler"""
-        p = self.players[player]
-
-        if not p.ruler:
-            return False
-        if p.has_j_ruled:
-            return False
-        if p.ruler.data.card_type != CardType.RULER:
+        ok, source, cost = self._can_perform_judgment(player)
+        if not ok or not source:
             return False
 
-        ruler = p.ruler
-        judgment_cost = ruler.data.judgment_cost
-
-        # Check and pay judgment cost
-        if judgment_cost and not p.will_pool.can_pay(judgment_cost):
-            return False
-
-        if judgment_cost:
-            p.will_pool.pay(judgment_cost)
-
-        # Rest ruler (if not already)
-        ruler.rest()
+        # Pay judgment cost (if any)
+        if cost:
+            self.players[player].will_pool.pay(cost)
 
         # Create Judgment chase item
         item = ChaseItem(
             uid=f"judgment_{player}",
-            source=ruler,
+            source=source,
             item_type="JUDGMENT",
             controller=player,
         )
 
         self.add_to_chase(item)
-        self.emit(EventType.JUDGMENT, player, ruler)
+        self.players[player].has_judged_this_turn = True
+        self.emit(EventType.JUDGMENT, player, source)
         return True
+
+    def _can_perform_judgment(self, player: int) -> tuple[bool, Optional[Card], Optional[WillCost]]:
+        """Check if player can perform Judgment (CR 705)."""
+        p = self.players[player]
+
+        # Main timing only, turn player only (CR 705.1)
+        if player != self.turn_player:
+            return False, None, None
+        if self.current_phase != Phase.MAIN or self.battle.in_battle:
+            return False, None, None
+
+        # Only one judgment process per turn (CR 705.1)
+        if p.has_judged_this_turn:
+            return False, None, None
+
+        # Determine source (ruler or J-ruler with judgment cost)
+        source: Optional[Card] = None
+        if p.ruler and p.ruler.data and p.ruler.data.card_type == CardType.RULER:
+            if not p.has_j_ruled and (p.ruler.data.judgment_cost is not None or p.ruler.data.j_ruler_code):
+                source = p.ruler
+        if not source and p.j_ruler and p.j_ruler.data:
+            if p.j_ruler.data.judgment_cost is not None:
+                source = p.j_ruler
+
+        if not source:
+            return False, None, None
+
+        # Must be recovered (not rested)
+        if source.is_rested:
+            return False, None, None
+
+        cost = source.data.judgment_cost
+        if cost is None:
+            # Fallback: parse from ability text (e.g., "J-Activate : Pay{1} {G} {G} .")
+            text = source.data.ability_text or ""
+            if "J-Activate" in text and "Pay" in text:
+                import re
+                m = re.search(r'J-Activate\\s*:?\\s*Pay\\s*([^\\n\\r]+)', text)
+                if m:
+                    seg = m.group(1)
+                    seg = re.split(r'[:,]', seg, 1)[0]
+                    tokens = re.findall(r'\\{([^}]*)\\}', seg)
+                    if tokens:
+                        from .models import WillCost
+                        cost = WillCost.parse("".join(tokens))
+                        source.data.judgment_cost = cost
+
+        if cost is None:
+            from .models import WillCost
+            cost = WillCost()
+
+        # Do not require will to already be in pool; UI can auto-tap sources.
+        return True, source, cost
 
     # =========================================================================
     # COMBAT
@@ -2396,6 +2514,12 @@ class GameEngine:
     def _deal_damage_to_player(self, player: int, amount: int, source: Card):
         """Deal damage to a player"""
         p = self.players[player]
+        # Replacement effects (CR 910)
+        if self._rules_engine:
+            amount, _ = self._rules_engine.would_deal_damage(source, player, amount, is_combat=False)
+        if amount <= 0:
+            return
+
         p.life -= amount
 
         self.emit(EventType.PLAYER_DAMAGED, player, source, amount=amount)
@@ -2403,6 +2527,30 @@ class GameEngine:
                   old_life=p.life + amount, new_life=p.life)
 
         # Check for game loss
+        if p.life <= 0:
+            self._player_loses(player, "life reached 0")
+
+    def gain_life(self, player: int, amount: int, source: Optional[Card] = None):
+        """Gain life with replacement effects."""
+        if self._rules_engine:
+            amount = self._rules_engine.would_gain_life(player, amount)
+        if amount <= 0:
+            return
+        p = self.players[player]
+        old = p.life
+        p.life += amount
+        self.emit(EventType.LIFE_CHANGED, player, source, old_life=old, new_life=p.life, amount=amount)
+
+    def lose_life(self, player: int, amount: int, source: Optional[Card] = None):
+        """Lose life with replacement effects."""
+        if self._rules_engine:
+            amount = self._rules_engine.would_lose_life(player, amount)
+        if amount <= 0:
+            return
+        p = self.players[player]
+        old = p.life
+        p.life -= amount
+        self.emit(EventType.LIFE_CHANGED, player, source, old_life=old, new_life=p.life, amount=-amount)
         if p.life <= 0:
             self._player_loses(player, "life reached 0")
 
@@ -2581,10 +2729,9 @@ class GameEngine:
                     })
 
             # Judgment
-            if p.ruler and not p.has_j_ruled:
-                if p.ruler.data.judgment_cost:
-                    if p.will_pool.can_pay(p.ruler.data.judgment_cost):
-                        actions.append({"type": "judgment"})
+            can_judge, _, _ = self._can_perform_judgment(player)
+            if can_judge:
+                actions.append({"type": "judgment"})
 
             # Attack
             if not self.battle.in_battle:

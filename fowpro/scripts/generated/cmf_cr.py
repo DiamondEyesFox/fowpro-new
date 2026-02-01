@@ -15,9 +15,11 @@ from ..rules_bridge import (
     Condition, ConditionType, ConditionBuilder,
     ContinuousEffect, RulesEffect, EffectAction,
     ModalAbility, IncarnationCost, AwakeningCost,
+    ReplacementEffectCR, ReplacementEventType, ReplacementEffectResult,
+    ReplacementBuilder,
     CostPaymentModifier,
 )
-from ...models import Attribute, WillCost
+from ...models import Attribute, WillCost, Phase, Zone
 
 
 @ScriptRegistry.register("CMF-001")

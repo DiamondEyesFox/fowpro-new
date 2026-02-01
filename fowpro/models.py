@@ -728,6 +728,7 @@ class PlayerState:
     ruler: Optional[Card] = None
     j_ruler: Optional[Card] = None
     has_j_ruled: bool = False  # Has performed Judgment this game
+    has_judged_this_turn: bool = False  # Has performed Judgment this turn
 
     # Turn flags
     has_called_stone: bool = False

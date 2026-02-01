@@ -208,6 +208,19 @@ class CardDatabase:
         judgment_cost = None
         if row["judgment_cost"]:
             judgment_cost = WillCost.parse(row["judgment_cost"])
+        # Fallback: parse from ability text if missing (common in older data)
+        if judgment_cost is None and row["card_type"] and "ruler" in row["card_type"].lower():
+            text = row["ability_text"] or ""
+            if "J-Activate" in text and "Pay" in text:
+                import re
+                # Accept "J-Activate Pay" or "J-Activate : Pay"
+                m = re.search(r'J-Activate\\s*:?\\s*Pay\\s*([^\\n\\r]+)', text)
+                if m:
+                    seg = m.group(1)
+                    seg = re.split(r'[:,]', seg, 1)[0]
+                    tokens = re.findall(r'\\{([^}]*)\\}', seg)
+                    if tokens:
+                        judgment_cost = WillCost.parse("".join(tokens))
 
         return CardData(
             code=row["code"],

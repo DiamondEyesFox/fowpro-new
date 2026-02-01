@@ -517,7 +517,8 @@ try:
         TargetRequirement, TargetFilter, TargetZone, TargetController, CommonFilters,
         Condition, ConditionType, ConditionOperator, ConditionBuilder,
         ModalChoice, Mode, ModalPatterns,
-        ContinuousEffect, ReplacementEffect, EffectBuilder,
+        ContinuousEffect, ReplacementEffectCR, ReplacementEventType, ReplacementEffectResult,
+        ReplacementBuilder, EffectBuilder,
         Ability, ActivateAbility, AutomaticAbility, ContinuousAbility, WillAbility,
         AbilityFactory,
         RulesEffect,
@@ -590,7 +591,8 @@ __all__ = [
     'ContinuousAbility', 'WillAbility', 'Ability', 'AbilityFactory',
 
     # CR Effects (CR 908-910)
-    'RulesEffect', 'EffectBuilder', 'ReplacementEffect',
+    'RulesEffect', 'EffectBuilder', 'ReplacementEffectCR',
+    'ReplacementEventType', 'ReplacementEffectResult', 'ReplacementBuilder',
     'EffectAction', 'EffectDuration',
 
     # CR Triggers (CR 906)
