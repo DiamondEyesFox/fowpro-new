@@ -797,9 +797,14 @@ class CRAbilityParser:
             # Check target type for group buffs
             target_type = None
             if group_buff:
-                type_match = re.search(r'each\s+(\w+)', text, re.IGNORECASE)
+                # Handle "each other X" vs "each X"
+                type_match = re.search(r'each\s+other\s+([\w-]+)', text, re.IGNORECASE)
                 if type_match:
                     target_type = type_match.group(1)
+                else:
+                    type_match = re.search(r'each\s+([\w-]+)', text, re.IGNORECASE)
+                    if type_match:
+                        target_type = type_match.group(1)
             effects.append(ParsedEffect(
                 action=EffectAction.MODIFY_ATK if atk != 0 else EffectAction.MODIFY_DEF,
                 params={'atk': atk, 'def': def_, 'to_others': group_buff, 'target_type': target_type},
@@ -1009,9 +1014,19 @@ class CRAbilityParser:
         # Scaling stat gain "gains +X/+Y for each"
         scale_match = re.search(r'gains?\s*\[?\+?(\d+)/\+?(\d+)\]?\s+for\s+each', text)
         if scale_match:
+            params = {
+                'atk_per': int(scale_match.group(1)),
+                'def_per': int(scale_match.group(2)),
+                'scaling': True,
+            }
+            # Try to capture what is being counted (e.g., "for each Fairy Tale you control")
+            count_match = re.search(r'for\s+each\s+([a-zA-Z/ -]+?)\s+you\s+control', text)
+            if count_match:
+                params['count_target'] = count_match.group(1).strip()
+
             effects.append(ParsedEffect(
                 action=EffectAction.MODIFY_ATK,
-                params={'atk_per': int(scale_match.group(1)), 'def_per': int(scale_match.group(2)), 'scaling': True},
+                params=params,
                 raw_text=scale_match.group(0),
             ))
 

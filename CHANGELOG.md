@@ -5,6 +5,21 @@ All notable changes to FoWPro will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-02-02
+
+### Added
+- CR script generation for all set codes present in the DB
+- UI preflight for missing CR scripts in the player deck
+
+### Changed
+- CR-only rules engine (removed legacy script system and fallbacks)
+- Script registry now hard-fails on missing scripts
+- AI deck selection filters to scripted cards only
+- v2 folder moved out of main repo
+
+### Fixed
+- Continuous effects pipeline improvements and script generation updates
+
 ## [0.3.2] - 2026-02-01
 
 ### Added

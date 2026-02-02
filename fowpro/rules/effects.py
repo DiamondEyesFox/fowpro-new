@@ -822,7 +822,7 @@ class ContinuousEffect:
         if self.affected_filter:
             source = game.get_card_by_uid(self.source_id)
             if source:
-                return self.affected_filter.matches(card, card.controller, source.controller)
+                return self.affected_filter.matches(card, card.controller, source.controller, source)
 
         return True
 

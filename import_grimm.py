@@ -91,12 +91,12 @@ async def import_all():
 
     # Generate scripts
     print()
-    print("Generating card scripts...")
-    from fowpro.scripts.generator import generate_all_scripts
+    print("Generating CR card scripts...")
+    from fowpro.scripts.cr_generator import generate_all_cr_scripts
     from pathlib import Path
 
     scripts_dir = Path(__file__).parent / "fowpro" / "scripts" / "generated"
-    generate_all_scripts(db, scripts_dir)
+    generate_all_cr_scripts(db, scripts_dir)
     print("Scripts generated!")
 
     db.close()

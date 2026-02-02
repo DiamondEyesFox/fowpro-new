@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Optional
 from .models import (
-    CardData, CardType, Attribute, WillCost, Keyword, Rarity, CardAbility
+    CardData, CardType, Attribute, WillCost, Keyword, Rarity
 )
 
 
@@ -143,6 +143,12 @@ class CardDatabase:
         cursor = self.conn.cursor()
         cursor.execute("SELECT * FROM cards ORDER BY code")
         return [self._row_to_card(row) for row in cursor.fetchall()]
+
+    def get_all_set_codes(self) -> list[str]:
+        """Get all distinct set codes present in the cards table."""
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT DISTINCT set_code FROM cards WHERE set_code IS NOT NULL AND set_code != '' ORDER BY set_code")
+        return [row[0] for row in cursor.fetchall()]
 
     def search_cards(self, name: str = "", card_type: str = "",
                      attribute: str = "", set_code: str = "") -> list[CardData]:

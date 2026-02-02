@@ -39,53 +39,9 @@ from ..rules import (
 # Replacement system (CR 910)
 from ..rules import ReplacementEventType, ReplacementEffectResult, ReplacementBuilder
 
-# Import old system for compatibility
-from . import Effect as OldEffect, EffectType as OldEffectType, EffectTiming as OldEffectTiming
-
 if TYPE_CHECKING:
     from ..engine import GameEngine
     from ..models import Card, Attribute, WillCost
-
-
-# =============================================================================
-# ABILITY TYPE MAPPING
-# =============================================================================
-
-def map_ability_to_old_effect_type(ability: Ability) -> OldEffectType:
-    """Map CR ability type to old EffectType for backward compatibility."""
-    if isinstance(ability, ActivateAbility):
-        return OldEffectType.ACTIVATED
-    elif isinstance(ability, AutomaticAbility):
-        # Map trigger condition to specific trigger type
-        tc = ability.trigger_condition
-        if tc == TriggerCondition.ENTER_FIELD:
-            return OldEffectType.TRIGGER_ENTER
-        elif tc == TriggerCondition.LEAVE_FIELD:
-            return OldEffectType.TRIGGER_LEAVE
-        elif tc == TriggerCondition.DECLARES_ATTACK:
-            return OldEffectType.TRIGGER_ATTACK
-        elif tc in (TriggerCondition.DEALS_DAMAGE, TriggerCondition.DEALS_BATTLE_DAMAGE):
-            return OldEffectType.TRIGGER_DAMAGE
-        else:
-            return OldEffectType.TRIGGER_ENTER  # Default
-    elif isinstance(ability, ContinuousAbility):
-        return OldEffectType.CONTINUOUS
-    elif isinstance(ability, WillAbility):
-        return OldEffectType.ACTIVATED  # Will abilities act like activated
-    else:
-        return OldEffectType.STATIC
-
-
-def map_timing_to_old(timing: EffectTiming) -> OldEffectTiming:
-    """Map CR timing to old EffectTiming."""
-    if timing == EffectTiming.MAIN_TIMING:
-        return OldEffectTiming.SPELL_SPEED
-    elif timing == EffectTiming.INSTANT:
-        return OldEffectTiming.INSTANT_SPEED
-    elif timing == EffectTiming.WILL_SPEED:
-        return OldEffectTiming.WILL_SPEED
-    else:
-        return OldEffectTiming.INSTANT_SPEED
 
 
 # =============================================================================
@@ -109,7 +65,6 @@ class RulesCardScript(ABC):
     def __init__(self, card_code: str):
         self.card_code = card_code
         self._abilities: List[Ability] = []
-        self._old_effects: List[OldEffect] = []  # For backward compatibility
 
     def register_ability(self, ability: Ability):
         """
@@ -121,7 +76,6 @@ class RulesCardScript(ABC):
         self._abilities.append(ability)
         # NOTE: We do NOT convert to old effects anymore to prevent double-firing.
         # CR abilities are handled by the engine's APNAPTriggerManager (rules/integration.py).
-        # Old effects (_old_effects) are ONLY for explicitly registered legacy effects.
 
     def register_spell_effect(self, effects: List[RulesEffect]):
         """
@@ -135,68 +89,6 @@ class RulesCardScript(ABC):
             effects=effects,
             is_mandatory=True,
         ))
-
-    def _convert_to_old_effect(self, ability: Ability) -> Optional[OldEffect]:
-        """Convert a CR ability to old Effect format for engine compatibility."""
-
-        # Create operation function that executes the ability's effects
-        def make_operation(ab: Ability):
-            def operation(game: 'GameEngine', card: 'Card', event_data: dict = None):
-                targets = event_data.get('targets', []) if event_data else []
-                choices = event_data.get('choices', {}) if event_data else {}
-                ab.resolve(game, card, card.controller, targets, choices)
-            return operation
-
-        # Create condition function
-        def make_condition(ab: Ability):
-            def condition(game: 'GameEngine', card: 'Card') -> bool:
-                return ab.can_play(game, card, card.controller)
-            return condition
-
-        if isinstance(ability, ActivateAbility):
-            return OldEffect(
-                name=ability.name,
-                effect_type=OldEffectType.ACTIVATED,
-                timing=map_timing_to_old(ability.timing),
-                will_cost=ability.will_cost,
-                tap_cost=ability.tap_cost,
-                condition=make_condition(ability),
-                operation=make_operation(ability),
-                uses_chase=True,  # Activate abilities use chase
-                once_per_turn=ability.once_per_turn,
-            )
-
-        elif isinstance(ability, AutomaticAbility):
-            return OldEffect(
-                name=ability.name,
-                effect_type=map_ability_to_old_effect_type(ability),
-                timing=OldEffectTiming.INSTANT_SPEED,
-                condition=make_condition(ability),
-                operation=make_operation(ability),
-                uses_chase=ability.trigger_timing == TriggerTiming.CHASE,
-                is_mandatory=ability.is_mandatory,
-                once_per_turn=ability.once_per_turn,
-            )
-
-        elif isinstance(ability, WillAbility):
-            # Will abilities are special - they don't use the chase
-            return OldEffect(
-                name=ability.name,
-                effect_type=OldEffectType.ACTIVATED,
-                timing=OldEffectTiming.WILL_SPEED,
-                tap_cost=ability.tap_cost,
-                uses_chase=False,  # CR 907.3: Will abilities don't use chase
-                operation=make_operation(ability),
-            )
-
-        elif isinstance(ability, ContinuousAbility):
-            return OldEffect(
-                name=ability.name,
-                effect_type=OldEffectType.CONTINUOUS,
-                value=ability.continuous_effect,
-            )
-
-        return None
 
     # =========================================================================
     # BACKWARD COMPATIBLE API
@@ -215,14 +107,6 @@ class RulesCardScript(ABC):
                 ))
         """
         pass
-
-    def register_effect(self, effect: OldEffect):
-        """Legacy method - register an old-style Effect directly."""
-        self._old_effects.append(effect)
-
-    def get_effects(self) -> List[OldEffect]:
-        """Get all registered effects in old format (for engine compatibility)."""
-        return self._old_effects
 
     def get_replacement_effects(self, game: 'GameEngine', card: 'Card') -> List[ReplacementEffectCR]:
         """Override to provide CR replacement effects from this card."""
@@ -248,19 +132,6 @@ class RulesCardScript(ABC):
             if ability.can_play(game, card, card.controller):
                 abilities.append(ability)
 
-        # Also check any legacy effects (for backward compat)
-        for effect in self._old_effects:
-            if effect.effect_type != OldEffectType.ACTIVATED:
-                continue
-            if effect.condition and not effect.condition(game, card):
-                continue
-            if effect.once_per_turn and getattr(effect, '_activated_this_turn', False):
-                continue
-            if effect.tap_cost and card.is_rested:
-                continue
-            # Convert to pseudo-ability for unified interface
-            abilities.append(effect)
-
         return abilities
 
     # =========================================================================
@@ -273,23 +144,14 @@ class RulesCardScript(ABC):
         NOTE: AutomaticAbility triggers are now handled by the engine's
         APNAPTriggerManager (CR 906). This hook is only for legacy effects.
         """
-        # Only run legacy old-style triggers (new ones handled by APNAPTriggerManager)
-        for effect in self._old_effects:
-            if effect.effect_type == OldEffectType.TRIGGER_ENTER:
-                if not effect.condition or effect.condition(game, card):
-                    if effect.operation:
-                        effect.operation(game, card)
+        pass
 
     def on_leave_field(self, game: 'GameEngine', card: 'Card'):
         """Called when card leaves the field.
 
         NOTE: AutomaticAbility triggers handled by APNAPTriggerManager.
         """
-        for effect in self._old_effects:
-            if effect.effect_type == OldEffectType.TRIGGER_LEAVE:
-                if not effect.condition or effect.condition(game, card):
-                    if effect.operation:
-                        effect.operation(game, card)
+        pass
 
     def on_attack(self, game: 'GameEngine', card: 'Card'):
         """Called when card attacks.
@@ -314,10 +176,6 @@ class RulesCardScript(ABC):
 
         Resets per-turn ability flags. Trigger firing handled by APNAPTriggerManager.
         """
-        # Reset once-per-turn flags for legacy effects
-        for effect in self._old_effects:
-            effect._activated_this_turn = False
-
         # Reset ability flags (triggers are reset by RulesEngine.triggers.reset_turn())
         for ability in self._abilities:
             if isinstance(ability, ActivateAbility):

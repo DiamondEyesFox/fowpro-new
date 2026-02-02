@@ -86,11 +86,12 @@ class TargetFilter:
     is_token: Optional[bool] = None
     is_addition: Optional[bool] = None
     can_be_targeted: bool = True  # For barrier checking
+    exclude_source: bool = False  # Exclude the source card (\"each other\" effects)
 
     # Custom filter function for complex conditions
     custom_filter: Optional[Callable] = None
 
-    def matches(self, card: 'Card', controller: int, source_controller: int) -> bool:
+    def matches(self, card: 'Card', controller: int, source_controller: int, source: Optional['Card'] = None) -> bool:
         """
         Check if a card matches this filter.
 
@@ -109,6 +110,11 @@ class TargetFilter:
             if TargetController.YOU in self.controllers and controller != source_controller:
                 return False
             if TargetController.OPPONENT in self.controllers and controller == source_controller:
+                return False
+
+        # Exclude source card if requested
+        if self.exclude_source and source is not None:
+            if card.uid == source.uid:
                 return False
 
         # Check card type
@@ -171,8 +177,16 @@ class TargetFilter:
 
         # Check races
         if self.races:
-            card_races = card.data.race.split('/') if card.data and card.data.race else []
-            card_races = [r.strip().lower() for r in card_races]
+            card_races = []
+            if card.data:
+                # Primary: list of races in CardData
+                if getattr(card.data, "races", None):
+                    card_races = [r.strip().lower() for r in card.data.races if r]
+                # Back-compat: single string "race"
+                elif getattr(card.data, "race", None):
+                    card_races = [r.strip().lower() for r in card.data.race.split('/') if r]
+            if not card_races:
+                return False
             if not any(r.lower() in card_races for r in self.races):
                 return False
 

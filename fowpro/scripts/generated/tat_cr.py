@@ -82,7 +82,7 @@ class DonQuijoteTheWanderingKnight(RulesCardScript):
         # Enhanced effect triggers when awakening cost is paid
 
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.INDESTRUCTIBLE)]
+        # TODO: continuous keyword grant not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -113,10 +113,7 @@ class GrimmTheAvengerOfFairyTales(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.remove_all_abilities(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -135,13 +132,10 @@ class GuardianOfTower(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+        # TODO: continuous keyword grant not auto-generated yet
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.buff(0, 600, EffectDuration.INSTANT),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -164,10 +158,7 @@ class JeanneDarcTheAwakeningPurity(RulesCardScript):
         # Enhanced effect triggers when awakening cost is paid
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.grant_ability(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -262,10 +253,7 @@ class LumielTheTowerOfHope(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.destroy(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -312,7 +300,7 @@ class RealmOfPureSpirits(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+        # TODO: continuous keyword grant not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -391,10 +379,7 @@ class SacredScepterOfExorcism(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.rest(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -442,10 +427,7 @@ class SleepingBeauty(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.recover(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -557,10 +539,7 @@ class CardSoldierHeart(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.redirect_damage(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -611,11 +590,7 @@ class EndlessWar(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_continuous_effect(ContinuousEffect(
-            name="Must Attack",
-            affects_self_only=True,
-            # Forces this card to attack if able
-        ))
+        # TODO: force-attack continuous effect not auto-generated yet
 
 
 
@@ -707,11 +682,7 @@ class FthagguaTheFlameSpirit(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=200,
-            def_=200,
-            name="This card gains [+200/+200] fo",
-        ))
+        # TODO: scaling buff not auto-generated yet (+200/+200 per match)
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -803,11 +774,7 @@ class LittleDreadTheFakeRedMoon(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.recover(),
-            EffectBuilder.gain_control(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -865,17 +832,10 @@ class RedbirdOfOmen(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.destroy(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.add_counter("omen"),
-            EffectBuilder.grant_ability(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1024,7 +984,7 @@ class CheshireCatTheGrinningRemnant(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+        # TODO: continuous keyword grant not auto-generated yet
 
         # Triggered ability (PUT_INTO_GRAVEYARD)
         self.register_ability(AutomaticAbility(
@@ -1151,11 +1111,7 @@ class MadHatter(RulesCardScript):
         # Enhanced effect triggers when awakening cost is paid
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.draw(1),
-            EffectBuilder.grant_ability(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1316,11 +1272,7 @@ class WitchsDagger(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.draw(3),
-            EffectBuilder.destroy(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -1344,11 +1296,7 @@ class BrainlessScarecrow(RulesCardScript):
         ))
 
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=300,
-            def_=300,
-            name="This card gains [+300/+300] fo",
-        ))
+        # TODO: scaling buff not auto-generated yet (+300/+300 per match)
 
 
 
@@ -1364,11 +1312,7 @@ class CowardlyLion(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=300,
-            def_=300,
-            name="This card gains [+300/+300] fo",
-        ))
+        # TODO: scaling buff not auto-generated yet (+300/+300 per match)
 
         # Triggered ability (DEALS_DAMAGE)
         self.register_ability(AutomaticAbility(
@@ -1442,12 +1386,7 @@ class DorothyTheLostGirl(RulesCardScript):
         # Enhanced effect triggers when awakening cost is paid
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.return_from_graveyard(),
-            EffectBuilder.rest(),
-            EffectBuilder.put_on_bottom_of_deck(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
         # Triggered ability (DEALS_DAMAGE)
         self.register_ability(AutomaticAbility(
@@ -1482,10 +1421,7 @@ class Dragonslayer(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.prevent_damage(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -1588,7 +1524,7 @@ class GuideOfHeaven(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [EffectBuilder.search(destination="hand", filter_type='resonator', filter_race='Elf', reveal=True)]
+        # TODO: continuous search effect not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1615,11 +1551,7 @@ class HeartlessTinMan(RulesCardScript):
         ))
 
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=300,
-            def_=300,
-            name="This card gains [+300/+300] fo",
-        ))
+        # TODO: scaling buff not auto-generated yet (+300/+300 per match)
 
 
 
@@ -1860,10 +1792,25 @@ class CardSoldierSpade(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=200,
-            def_=200,
-            name="This card gains [+200/+200] fo",
+        # Scaling buff: this card gains +200/+200 per other card soldier
+        count_filter = TargetFilter(controllers=[TargetController.YOU], races=["other card soldier"])
+        def _apply_scaling_buff(target, game):
+            source = target
+            count = 0
+            for p in game.players:
+                for c in p.field:
+                    if count_filter.matches(c, c.controller, source.controller, source):
+                        count += 1
+            target.current_atk = (target.current_atk or 0) + (200 * count)
+            target.current_def = (target.current_def or 0) + (200 * count)
+        self.register_ability(ContinuousAbility(
+            name="This card gains [+200/+200] for each oth",
+            continuous_effect=ContinuousEffect(
+                name="This card gains [+200/+200] for each oth",
+                affects_self_only=True,
+                apply_func=_apply_scaling_buff,
+                duration=EffectDuration.WHILE_ON_FIELD
+            )
         ))
 
 
@@ -1918,11 +1865,7 @@ class EbonyDevil(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.deal_damage(200),
-            EffectBuilder.grant_ability(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -1998,11 +1941,7 @@ class ElderThings(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=200,
-            def_=200,
-            name="This card gains [+200/+200] fo",
-        ))
+        # TODO: scaling buff not auto-generated yet (+200/+200 per match)
 
 
 
@@ -2076,11 +2015,7 @@ class MephistophelesTheAbyssalTyrant(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.banish(),
-            EffectBuilder.grant_ability(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -2100,10 +2035,7 @@ class Necronomicon(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.grant_ability(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_replacement_effects(self, game, card):
@@ -2149,10 +2081,7 @@ class NeithardtTheDemonKnight(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.prevent_all_damage(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:

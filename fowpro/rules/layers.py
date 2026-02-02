@@ -153,7 +153,7 @@ class LayeredEffect:
         # Filter check
         if self.affected_filter:
             return self.affected_filter.matches(
-                card, card.controller, source.controller
+                card, card.controller, source.controller, source
             )
 
         return True

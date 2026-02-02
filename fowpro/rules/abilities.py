@@ -588,10 +588,6 @@ class JudgmentAbility(Ability):
         # Enter field as J-Ruler
         game.move_card(card, player, Zone.FIELD)
 
-        # Trigger enter effects
-        from .types import TriggerCondition
-        game._check_triggers(TriggerCondition.ENTER_FIELD, card.controller, card)
-
         return True
 
 

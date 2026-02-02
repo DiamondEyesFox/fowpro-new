@@ -1845,8 +1845,30 @@ class DuelScreen(QWidget):
                 "No deck found. Please create a deck in the Deck Editor and set it as default.")
             return False
 
+        # CR-only: validate scripts exist for the player's deck
+        try:
+            from ..scripts import ScriptRegistry
+            missing = []
+            for c in p0_deck + p0_stones + [p0_ruler]:
+                if not ScriptRegistry.has_script(c.code):
+                    missing.append(c.code)
+            if missing:
+                QMessageBox.warning(
+                    self,
+                    "Missing Scripts",
+                    "Missing CR scripts for:\n" + "\n".join(sorted(set(missing)))
+                )
+                return False
+        except Exception:
+            pass
+
         # Build AI opponent deck (random from available cards)
         all_cards = db.get_all_cards()
+        try:
+            from ..scripts import ScriptRegistry
+            all_cards = [c for c in all_cards if ScriptRegistry.has_script(c.code)]
+        except Exception:
+            pass
         rulers = [c for c in all_cards if c.card_type == CardType.RULER]
         resonators = [c for c in all_cards if c.card_type == CardType.RESONATOR]
         stones = [c for c in all_cards if c.is_stone()]
@@ -1856,7 +1878,7 @@ class DuelScreen(QWidget):
             return False
 
         # Pick a different ruler for AI if possible
-        p1_ruler = rulers[0]
+        p1_ruler = p0_ruler
         for r in rulers:
             if r.code != p0_ruler.code:
                 p1_ruler = r

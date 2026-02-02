@@ -454,9 +454,9 @@ class CardScraper:
         return total
 
     def generate_scripts(self, output_dir: str = None):
-        """Generate Python scripts from scraped card data"""
+        """Generate CR-compliant Python scripts from scraped card data"""
         from pathlib import Path
-        from .scripts.generator import generate_all_scripts
+        from .scripts.cr_generator import generate_all_cr_scripts
 
         if output_dir is None:
             # Default to scripts/generated directory
@@ -465,7 +465,7 @@ class CardScraper:
             output_dir = Path(output_dir)
 
         print(f"\nGenerating scripts to {output_dir}...")
-        generate_all_scripts(self.db, output_dir)
+        generate_all_cr_scripts(self.db, output_dir)
         print("Script generation complete!")
 
 

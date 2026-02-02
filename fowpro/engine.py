@@ -26,22 +26,12 @@ from .database import CardDatabase
 # Import script system - do this lazily to avoid circular imports
 def _get_script_registry():
     from .scripts import ScriptRegistry
-    # Import default script handler
-    from .scripts import default  # noqa
     # Import generated scripts (includes stones)
     try:
         from .scripts import generated  # noqa
     except ImportError:
         pass  # Generated scripts may not exist yet
     return ScriptRegistry
-
-def _get_trigger_manager_class():
-    from .scripts.triggers import TriggerManager, TriggerEvent
-    return TriggerManager, TriggerEvent
-
-def _get_continuous_manager_class():
-    from .scripts.continuous import ContinuousEffectManager
-    return ContinuousEffectManager
 
 def _get_choice_manager_class():
     from .rules.choices import ChoiceManager
@@ -174,14 +164,6 @@ class GameEngine:
         self._all_cards: dict[str, Card] = {}  # uid -> Card
         self._uid_counter: int = 0
 
-        # Effect system managers
-        TriggerManager, _ = _get_trigger_manager_class()
-        ContinuousEffectManager = _get_continuous_manager_class()
-        ChoiceManager = _get_choice_manager_class()
-        self.trigger_manager = TriggerManager(self)
-        self.continuous_manager = ContinuousEffectManager(self)
-        self.choice_manager = ChoiceManager(self)
-
         # End-of-turn effect callbacks (for temporary effects)
         self._eot_callbacks: list[Callable[[], None]] = []
 
@@ -189,39 +171,15 @@ class GameEngine:
         self._rules_engine = None
         self._get_rules_engine()  # Initialize now so hooks are registered
 
-        # EventType -> TriggerEvent mapping
-        self._event_trigger_map = self._build_event_trigger_map()
+        # Expose choice manager for UI and engine helpers
+        self.choice_manager = self._rules_engine.choices if self._rules_engine else _get_choice_manager_class()(self)
 
     def _get_rules_engine(self):
         """Get or create the rules engine wrapper."""
         if self._rules_engine is None:
-            try:
-                from .rules.integration import RulesEngine
-                self._rules_engine = RulesEngine(self)
-            except ImportError:
-                pass  # Rules module not available
+            from .rules.integration import RulesEngine
+            self._rules_engine = RulesEngine(self)
         return self._rules_engine
-
-    def _build_event_trigger_map(self) -> dict:
-        """Build mapping from EventType to TriggerEvent"""
-        _, TriggerEvent = _get_trigger_manager_class()
-        return {
-            EventType.TURN_START: TriggerEvent.TURN_START,
-            EventType.TURN_END: TriggerEvent.TURN_END,
-            EventType.PHASE_CHANGE: TriggerEvent.NONE,  # Handled by specific phase triggers
-            EventType.ENTERS_FIELD: TriggerEvent.ENTER_FIELD,
-            EventType.LEAVES_FIELD: TriggerEvent.LEAVE_FIELD,
-            EventType.CARD_DESTROYED: TriggerEvent.DESTROYED,
-            EventType.CARD_BANISHED: TriggerEvent.BANISHED,
-            EventType.ATTACK_DECLARED: TriggerEvent.ATTACK_DECLARED,
-            EventType.BLOCKER_DECLARED: TriggerEvent.BLOCKER_DECLARED,
-            EventType.DAMAGE_DEALT: TriggerEvent.DAMAGE_DEALT,
-            EventType.PLAYER_DAMAGED: TriggerEvent.PLAYER_DAMAGED,
-            EventType.CARD_DRAWN: TriggerEvent.CARD_DRAWN,
-            EventType.WILL_PRODUCED: TriggerEvent.WILL_PRODUCED,
-            EventType.STONE_CALLED: TriggerEvent.STONE_CALLED,
-            EventType.LIFE_CHANGED: TriggerEvent.NONE,  # Handled by gain/loss
-        }
 
     # =========================================================================
     # EVENT SYSTEM
@@ -261,26 +219,6 @@ class GameEngine:
         self._event_queue.clear()
         return events
 
-    def _check_triggers(self, event: GameEvent):
-        """Check for triggered abilities that respond to this event"""
-        # Map EventType to TriggerEvent
-        trigger_event = self._event_trigger_map.get(event.event_type)
-        if not trigger_event:
-            return
-
-        # Build event data from GameEvent
-        event_data = dict(event.data) if event.data else {}
-        if event.card:
-            event_data['card'] = event.card
-            event_data['source'] = event.card
-        if event.target:
-            event_data['target'] = event.target
-        event_data['player'] = event.player
-        event_data['event_type'] = event.event_type
-
-        # Check triggers
-        self.trigger_manager.check_triggers(trigger_event, event_data)
-
     def process_pending_triggers(self):
         """Process all pending triggered abilities.
 
@@ -289,9 +227,6 @@ class GameEngine:
         """
         if self._rules_engine:
             self._rules_engine.add_triggers_to_chase()
-        else:
-            # Fallback to legacy (shouldn't happen if RulesEngine initialized)
-            self.trigger_manager.process_pending_triggers()
 
     # =========================================================================
     # END-OF-TURN EFFECT REGISTRATION
@@ -484,6 +419,11 @@ class GameEngine:
                     logger.exception(f"move_card: on_enter_field hook error for {card.data.name}")
                 logger.debug(f"move_card: on_enter_field done for {card.data.name}")
 
+                # Re-apply continuous effects immediately for new field entries
+                if self._rules_engine:
+                    logger.debug(f"continuous: apply after enter for {card.data.name}")
+                    self._rules_engine.apply_continuous_effects()
+
         if from_zone == Zone.FIELD and to_zone != Zone.FIELD:
             self.emit(EventType.LEAVES_FIELD, from_player, card)
             # Unregister card's effects from RulesEngine
@@ -495,6 +435,10 @@ class GameEngine:
             # Call script's on_leave_field hook
             script = self.get_script(card)
             script.on_leave_field(self, card)
+            # Re-apply continuous effects immediately after leaving the field
+            if self._rules_engine:
+                logger.debug(f"continuous: apply after leave for {card.data.name}")
+                self._rules_engine.apply_continuous_effects()
 
         if to_zone == Zone.GRAVEYARD:
             self.emit(EventType.ENTERS_GRAVEYARD, card.controller, card)
@@ -671,32 +615,6 @@ class GameEngine:
                     )
                     self._rules_engine.triggers.register_trigger(card, trigger)
 
-        # Also check for legacy-style effects (backward compatibility)
-        from .scripts import EffectType
-        effect_type_to_trigger = {
-            EffectType.TRIGGER_ENTER: TriggerCondition.ENTER_FIELD,
-            EffectType.TRIGGER_LEAVE: TriggerCondition.LEAVE_FIELD,
-            EffectType.TRIGGER_ATTACK: TriggerCondition.DECLARES_ATTACK,
-            EffectType.TRIGGER_BLOCK: TriggerCondition.DECLARES_BLOCK,
-            EffectType.TRIGGER_DAMAGE: TriggerCondition.DEALS_DAMAGE,
-            EffectType.TRIGGER_RECOVER: TriggerCondition.RECOVERED,
-            EffectType.TRIGGER_REST: TriggerCondition.RESTED,
-        }
-
-        for effect in script.get_effects():
-            trigger_cond = effect_type_to_trigger.get(effect.effect_type)
-            if trigger_cond and effect.operation:
-                trigger = TriggeredAbility(
-                    name=effect.name or "Triggered Ability",
-                    trigger_condition=trigger_cond,
-                    trigger_type=TriggerType.STANDARD,
-                    operation=effect.operation,
-                    is_mandatory=effect.is_mandatory,
-                    once_per_turn=effect.once_per_turn,
-                    timing=TriggerTiming.CHASE if effect.uses_chase else TriggerTiming.IMMEDIATE,
-                )
-                self._rules_engine.triggers.register_trigger(card, trigger)
-
     def _register_card_continuous_effects(self, card: Card, script):
         """Register a card's continuous effects with RulesEngine's LayerManager.
 
@@ -706,6 +624,7 @@ class GameEngine:
             return
 
         from .rules.layers import LayeredEffect, Layer
+        from .rules.effects import EffectLayer as CREffectLayer
         from .rules.types import EffectDuration
 
         # Check for RulesCardScript-style continuous effects (preferred)
@@ -714,34 +633,53 @@ class GameEngine:
                 cr_effects = script.get_continuous_effects(self, card)
                 for cr_effect in cr_effects:
                     # Convert to LayeredEffect for the layer system
+                    # Map CR continuous effect layer to LayeredEffect layer
+                    cr_layer = cr_effect.get_layer() if hasattr(cr_effect, "get_layer") else None
+                    if cr_layer == CREffectLayer.COPY:
+                        layer = Layer.COPY
+                    elif cr_layer == CREffectLayer.CONTROL:
+                        layer = Layer.CONTROL
+                    elif cr_layer == CREffectLayer.TEXT:
+                        layer = Layer.TEXT
+                    elif cr_layer == CREffectLayer.TYPE:
+                        layer = Layer.TYPE
+                    elif cr_layer == CREffectLayer.ATTRIBUTE:
+                        layer = Layer.ATTRIBUTE
+                    elif cr_layer == CREffectLayer.STATS_SET:
+                        layer = Layer.STAT_SET
+                    elif cr_layer == CREffectLayer.STATS_MODIFY:
+                        layer = Layer.STAT_MODIFY
+                    elif cr_layer in (CREffectLayer.KEYWORDS, CREffectLayer.ABILITIES):
+                        layer = Layer.ABILITY
+                    else:
+                        layer = Layer.STAT_MODIFY
+
+                    def _wrap_apply_func(func):
+                        # rules.effects ContinuousEffect apply_func signature: (card, game)
+                        def _wrapped(card_obj, game_obj, _effect=None):
+                            return func(card_obj, game_obj)
+                        return _wrapped
+
                     layered = LayeredEffect(
                         source_id=card.uid,
                         name=cr_effect.name,
-                        layer=Layer.STAT_MODIFY,
+                        layer=layer,
                         duration=EffectDuration.WHILE_ON_FIELD,
-                        modify_atk=cr_effect.atk_modifier,
-                        modify_def=cr_effect.def_modifier,
-                        affects_self_only=cr_effect.affects_self_only if hasattr(cr_effect, 'affects_self_only') else True,
+                        modify_atk=getattr(cr_effect, 'atk_modifier', 0) or 0,
+                        modify_def=getattr(cr_effect, 'def_modifier', 0) or 0,
+                        set_atk=getattr(cr_effect, 'set_atk', None),
+                        set_def=getattr(cr_effect, 'set_def', None),
+                        grant_keywords=getattr(cr_effect, 'grant_keywords', None) or 0,
+                        remove_keywords=getattr(cr_effect, 'remove_keywords', None) or 0,
+                        grant_abilities=getattr(cr_effect, 'grant_abilities', []) or [],
+                        affected_filter=getattr(cr_effect, 'affected_filter', None),
+                        affects_self_only=getattr(cr_effect, 'affects_self_only', False),
+                        condition=getattr(cr_effect, 'condition', None),
+                        apply_func=_wrap_apply_func(cr_effect.apply_func) if getattr(cr_effect, 'apply_func', None) else None,
                     )
                     self._rules_engine.layers.register_effect(layered)
             except Exception as e:
                 logger.exception(f"Error registering CR continuous effects for {card.data.name}")
-
-        # Also handle legacy effects for backward compatibility
-        from .scripts import EffectType
-        for effect in script.get_effects():
-            if effect.effect_type in (EffectType.CONTINUOUS, EffectType.STATIC):
-                if effect.value and isinstance(effect.value, dict):
-                    layered = LayeredEffect(
-                        source_id=card.uid,
-                        name=effect.name or "Continuous Effect",
-                        layer=Layer.STAT_MODIFY,
-                        duration=EffectDuration.WHILE_ON_FIELD,
-                        modify_atk=effect.value.get('atk_mod', 0),
-                        modify_def=effect.value.get('def_mod', 0),
-                        affects_self_only=True,
-                    )
-                    self._rules_engine.layers.register_effect(layered)
 
         # Register cost modifiers (CR 402.2)
         if hasattr(script, 'get_cost_modifiers'):
@@ -825,7 +763,8 @@ class GameEngine:
         self.process_pending_triggers()
 
         # Clear "until end of turn" continuous effects
-        self.continuous_manager.remove_end_of_turn_effects()
+        if self._rules_engine:
+            self._rules_engine.layers.clear_end_of_turn_effects()
 
         # Execute registered end-of-turn callbacks (for custom EOT effects)
         self._execute_eot_callbacks()
@@ -834,14 +773,14 @@ class GameEngine:
         for p in self.players:
             p.will_pool.clear()
 
-        # Clear temporary damage and reset cards for next turn
+        # Clear temporary damage for next turn
         for p in self.players:
             for card in p.field:
-                # Reset temporary stat modifications
-                if card.data:
-                    card.current_atk = card.data.atk or 0
-                    card.current_def = card.data.defense or 0
                 card.damage = 0
+
+        # Re-apply continuous effects so ongoing buffs persist into the next turn
+        if self._rules_engine:
+            self._rules_engine.apply_continuous_effects()
 
         # Switch turn player
         self.turn_number += 1
@@ -923,7 +862,7 @@ class GameEngine:
             # After discarding chosen cards, loop will exit if hand <= 7
 
         # Note: "Until end of turn" effect clearing happens in end_turn()
-        # via continuous_manager.remove_end_of_turn_effects() and _execute_eot_callbacks()
+        # via RulesEngine layer cleanup and _execute_eot_callbacks()
 
     # =========================================================================
     # PRIORITY SYSTEM
@@ -1125,50 +1064,7 @@ class GameEngine:
                     except Exception:
                         pass
 
-                    # Legacy operation path
-                    if hasattr(ability, 'operation') and ability.operation:
-                        # Revalidate targets for legacy abilities if present
-                        if item.targets:
-                            try:
-                                from .rules.targeting import CommonFilters
-                                filter_map = {
-                                    "j_resonator": CommonFilters.j_resonator(),
-                                    "resonator": CommonFilters.resonator(),
-                                    "addition": CommonFilters.addition(),
-                                    "magic_stone": CommonFilters.magic_stone(),
-                                    "opponent_j_resonator": CommonFilters.opponent_j_resonator(),
-                                    "your_j_resonator": CommonFilters.your_j_resonator(),
-                                }
-                                target_filter = filter_map.get(getattr(ability, 'target_filter', ''), None)
-                            except Exception:
-                                target_filter = None
-
-                            valid_targets = []
-                            for target in item.targets:
-                                if not hasattr(target, 'uid'):
-                                    valid_targets.append(target)
-                                    continue
-                                if self.is_valid_target(card, target, card.controller, target_filter):
-                                    valid_targets.append(target)
-
-                            if not valid_targets and getattr(ability, 'requires_target', False):
-                                self.emit(EventType.SPELL_FIZZLED, card.controller, card)
-                                return
-
-                            item.targets = valid_targets
-
-                        try:
-                            if item.targets:
-                                ability.operation(self, card, item.targets)
-                            else:
-                                ability.operation(self, card)
-                        except TypeError:
-                            # Fallback if operation doesn't accept targets
-                            ability.operation(self, card)
-                        return
-
-        # Fallback to old behavior
-        self._execute_card_effect(card, item.targets, item.effect_data)
+        return
 
     def _resolve_trigger(self, item: ChaseItem):
         """Resolve a triggered ability.
@@ -1387,89 +1283,55 @@ class GameEngine:
 
         ability = abilities[ability_index]
 
-        # Determine ability type (CR ActivateAbility vs legacy Effect)
-        is_cr_ability = False
-        try:
-            from .rules.abilities import ActivateAbility as CRActivateAbility
-            is_cr_ability = isinstance(ability, CRActivateAbility)
-        except Exception:
-            is_cr_ability = False
-
-        if is_cr_ability:
-            # CR ActivateAbility: verify it can be played
-            if not ability.can_play(self, card, player):
-                return False
-
-            # Request targets if needed and not provided
-            if ability.targets and not targets:
-                if self._rules_engine:
-                    targets = self._rules_engine.request_targets(
-                        player, card, ability.targets,
-                        prompt=f"Choose targets for {ability.name}"
-                    )
-                if not targets and any(not req.validate_count(0) for req in ability.targets):
-                    return False
-
-            # Additional costs for CR abilities
-            if getattr(ability, 'additional_costs', None):
-                if not self._can_pay_additional_costs(player, card, ability.additional_costs):
-                    return False
-                if not self._pay_additional_costs(player, card, ability.additional_costs):
-                    return False
-
-            # Pay costs now (activation time)
-            if ability.will_cost:
-                if not p.will_pool.can_pay(ability.will_cost):
-                    return False
-                p.will_pool.pay(ability.will_cost)
-                self.emit(EventType.WILL_SPENT, player, card, cost=str(ability.will_cost))
-            if ability.tap_cost:
-                card.rest()
-
-            # Mark once-per-turn usage
-            if ability.once_per_turn:
-                ability.used_this_turn = True
-
-            # CR activated abilities use the chase
-            item = ChaseItem(
-                uid=str(uuid.uuid4()),
-                source=card,
-                item_type="ABILITY",
-                controller=player,
-                targets=targets or [],
-                effect_data={"ability_index": ability_index, "cr_ability": True},
-            )
-            self.add_to_chase(item)
-            return True
-
-        # Legacy ActivatedAbility target selection (if needed)
-        if getattr(ability, 'requires_target', False) and not targets:
-            if self._rules_engine:
-                try:
-                    from .rules.targeting import TargetRequirement, CommonFilters
-                    filter_map = {
-                        "j_resonator": CommonFilters.j_resonator(),
-                        "resonator": CommonFilters.resonator(),
-                        "addition": CommonFilters.addition(),
-                        "magic_stone": CommonFilters.magic_stone(),
-                        "opponent_j_resonator": CommonFilters.opponent_j_resonator(),
-                        "your_j_resonator": CommonFilters.your_j_resonator(),
-                    }
-                    target_filter = filter_map.get(getattr(ability, 'target_filter', ''), CommonFilters.j_resonator())
-                    requirements = [TargetRequirement(count=1, filter=target_filter)]
-                    targets = self._rules_engine.request_targets(
-                        player, card, requirements,
-                        prompt=f"Choose targets for {ability.name}"
-                    )
-                except Exception:
-                    targets = None
-
-            if not targets:
-                return False
-
-        # Check costs
-        if ability.will_cost and not p.will_pool.can_pay(ability.will_cost):
+        # CR ActivateAbility: verify it can be played
+        from .rules.abilities import ActivateAbility as CRActivateAbility
+        if not isinstance(ability, CRActivateAbility):
             return False
+
+        if not ability.can_play(self, card, player):
+            return False
+
+        # Request targets if needed and not provided
+        if ability.targets and not targets:
+            if self._rules_engine:
+                targets = self._rules_engine.request_targets(
+                    player, card, ability.targets,
+                    prompt=f"Choose targets for {ability.name}"
+                )
+            if not targets and any(not req.validate_count(0) for req in ability.targets):
+                return False
+
+        # Additional costs for CR abilities
+        if getattr(ability, 'additional_costs', None):
+            if not self._can_pay_additional_costs(player, card, ability.additional_costs):
+                return False
+            if not self._pay_additional_costs(player, card, ability.additional_costs):
+                return False
+
+        # Pay costs now (activation time)
+        if ability.will_cost:
+            if not p.will_pool.can_pay(ability.will_cost):
+                return False
+            p.will_pool.pay(ability.will_cost)
+            self.emit(EventType.WILL_SPENT, player, card, cost=str(ability.will_cost))
+        if ability.tap_cost:
+            card.rest()
+
+        # Mark once-per-turn usage
+        if ability.once_per_turn:
+            ability.used_this_turn = True
+
+        # CR activated abilities use the chase
+        item = ChaseItem(
+            uid=str(uuid.uuid4()),
+            source=card,
+            item_type="ABILITY",
+            controller=player,
+            targets=targets or [],
+            effect_data={"ability_index": ability_index, "cr_ability": True},
+        )
+        self.add_to_chase(item)
+        return True
 
     def _can_pay_additional_costs(self, player: int, source_card: Card,
                                   costs: list[dict]) -> bool:
@@ -1609,97 +1471,48 @@ class GameEngine:
         # Get script for alternative costs
         script = self.get_script(card)
 
-        # Use CR-compliant CostManager when available (CR 402)
-        if self._rules_engine:
-            # Build alternative cost if using incarnation
-            alternative = None
-            if use_incarnation:
-                alts = self._rules_engine.costs.get_available_alternatives(card, player)
-                for alt in alts:
-                    if 'Incarnation' in alt.name:
-                        alternative = alt
-                        break
-                if not alternative:
-                    return False  # No incarnation available
+        if not self._rules_engine:
+            return False
 
-            # Check if cost can be paid (includes reductions/increases per CR 402.2)
-            if not self._rules_engine.costs.can_pay_cost(
-                card, player, alternative, awakening=use_awakening
-            ):
-                return False
+        # Build alternative cost if using incarnation
+        alternative = None
+        if use_incarnation:
+            alts = self._rules_engine.costs.get_available_alternatives(card, player)
+            for alt in alts:
+                if 'Incarnation' in alt.name:
+                    alternative = alt
+                    break
+            if not alternative:
+                return False  # No incarnation available
 
-            # Generate and execute payment plan
-            plan = self._rules_engine.costs.generate_payment_plan(
-                card, player, alternative, use_awakening, x_value
-            )
-            if not plan:
-                return False
+        # Check if cost can be paid (includes reductions/increases per CR 402.2)
+        if not self._rules_engine.costs.can_pay_cost(
+            card, player, alternative, awakening=use_awakening
+        ):
+            return False
 
-            # For incarnation, add the cards to banish to the plan
-            if use_incarnation and incarnation_cards:
-                plan.cards_to_banish.extend(incarnation_cards)
+        # Generate and execute payment plan
+        plan = self._rules_engine.costs.generate_payment_plan(
+            card, player, alternative, use_awakening, x_value
+        )
+        if not plan:
+            return False
 
-            # Execute payment
-            if not self._rules_engine.costs.pay_cost(card, player, plan):
-                return False
+        # For incarnation, add the cards to banish to the plan
+        if use_incarnation and incarnation_cards:
+            plan.cards_to_banish.extend(incarnation_cards)
 
-            # Mark card state
-            if use_incarnation:
-                card.played_via_incarnation = True
-            if use_awakening:
-                card.is_awakened = True
+        # Execute payment
+        if not self._rules_engine.costs.pay_cost(card, player, plan):
+            return False
 
-            self.emit(EventType.WILL_SPENT, player, card, cost=str(card.data.cost))
+        # Mark card state
+        if use_incarnation:
+            card.played_via_incarnation = True
+        if use_awakening:
+            card.is_awakened = True
 
-        else:
-            # Legacy cost handling (fallback when no RulesEngine)
-            # Handle Incarnation (CR 1105) - alternative cost via banishing
-            if use_incarnation and script:
-                incarnation_cost = getattr(script, 'incarnation_cost', None)
-                if not incarnation_cost:
-                    # Check registered alternative costs
-                    alt_costs = getattr(script, '_alternative_costs', [])
-                    for cost in alt_costs:
-                        if hasattr(cost, 'banish_count'):  # IncarnationCost
-                            incarnation_cost = cost
-                            break
-
-                if incarnation_cost:
-                    if not incarnation_cost.can_pay(self, player):
-                        return False
-                    if not incarnation_cards or len(incarnation_cards) < incarnation_cost.banish_count:
-                        return False
-                    # Pay incarnation cost (banish resonators)
-                    incarnation_cost.pay(self, player, incarnation_cards)
-                    # Mark card as played via incarnation
-                    card.played_via_incarnation = True
-                else:
-                    return False  # No incarnation cost available
-            else:
-                # Normal cost payment
-                # Check for cost payment modifiers (e.g., Grimm's ability via CostManager)
-                any_will = False
-                if self._rules_engine:
-                    any_will = self._rules_engine.costs.any_will_pays_colored(card, player)
-
-                # Check base cost
-                if not p.will_pool.can_pay(card.data.cost, any_will_pays_colored=any_will):
-                    return False
-
-                # Pay base cost
-                p.will_pool.pay(card.data.cost, any_will_pays_colored=any_will)
-                self.emit(EventType.WILL_SPENT, player, card, cost=str(card.data.cost))
-
-            # Handle Awakening (CR 1102) - extra cost for enhanced effect
-            if use_awakening and script:
-                awakening_cost = getattr(script, 'awakening_cost', None)
-                if awakening_cost:
-                    if not awakening_cost.can_pay(self, player, x_value):
-                        return False
-                    awakening_cost.pay(self, player, x_value)
-                    # Mark card as awakened
-                    card.is_awakened = True
-                    self.emit(EventType.WILL_SPENT, player, card, cost="awakening")
+        self.emit(EventType.WILL_SPENT, player, card, cost=str(card.data.cost))
 
         # Store X value on card for effect resolution
         if x_value > 0:
@@ -2590,8 +2403,6 @@ class GameEngine:
         # Apply continuous effects first using LayerManager (CR 909)
         if self._rules_engine:
             self._rules_engine.apply_continuous_effects()
-        else:
-            self.continuous_manager.apply_all_effects()
 
         changed = True
         iterations = 0
@@ -2615,11 +2426,8 @@ class GameEngine:
                     changed = True
 
             # Re-apply continuous effects if state changed
-            if changed:
-                if self._rules_engine:
-                    self._rules_engine.apply_continuous_effects()
-                else:
-                    self.continuous_manager.apply_all_effects()
+            if changed and self._rules_engine:
+                self._rules_engine.apply_continuous_effects()
 
         # Process any pending triggered abilities (APNAP ordering)
         self.process_pending_triggers()

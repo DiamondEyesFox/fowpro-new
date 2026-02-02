@@ -532,6 +532,50 @@ class CRScriptGenerator:
         lines = []
         lines.append(f'        # [Continuous] ability')
 
+        # Prefer scaling buffs over flat stat modifiers when both are parsed
+        scaling_effect = None
+        for effect in ability.effects:
+            if effect.params.get('scaling'):
+                scaling_effect = effect
+                break
+
+        if scaling_effect:
+            params = scaling_effect.params
+            atk_per = params.get('atk_per', 0)
+            def_per = params.get('def_per', 0)
+            count_target = params.get('count_target')
+            if count_target:
+                lines.append(f'        # Scaling buff: this card gains +{atk_per}/+{def_per} per {count_target}')
+                type_key = count_target.lower()
+                card_type_tokens = {"resonator", "j-ruler", "ruler", "j/resonator", "addition", "regalia", "spell", "chant", "magic stone"}
+                if type_key in card_type_tokens:
+                    filter_args = f'controllers=[TargetController.YOU], card_types=["{count_target}"]'
+                else:
+                    filter_args = f'controllers=[TargetController.YOU], races=["{count_target}"]'
+                lines.append(f'        count_filter = TargetFilter({filter_args})')
+                lines.append(f'        def _apply_scaling_buff(target, game):')
+                lines.append(f'            source = target')
+                lines.append(f'            count = 0')
+                lines.append(f'            for p in game.players:')
+                lines.append(f'                for c in p.field:')
+                lines.append(f'                    if count_filter.matches(c, c.controller, source.controller, source):')
+                lines.append(f'                        count += 1')
+                lines.append(f'            target.current_atk = (target.current_atk or 0) + ({atk_per} * count)')
+                lines.append(f'            target.current_def = (target.current_def or 0) + ({def_per} * count)')
+                lines.append(f'        self.register_ability(ContinuousAbility(')
+                lines.append(f'            name="{self._escape_name(ability.raw_text, 40)}",')
+                lines.append(f'            continuous_effect=ContinuousEffect(')
+                lines.append(f'                name="{self._escape_name(ability.raw_text, 40)}",')
+                lines.append(f'                affects_self_only=True,')
+                lines.append(f'                apply_func=_apply_scaling_buff,')
+                lines.append(f'                duration=EffectDuration.WHILE_ON_FIELD')
+                lines.append(f'            )')
+                lines.append(f'        ))')
+            else:
+                lines.append(f'        # TODO: scaling buff not auto-generated yet (+{atk_per}/+{def_per} per match)')
+            lines.append('')
+            return lines
+
         # Check for various continuous effect patterns
         generated = False
         for effect in ability.effects:
@@ -541,12 +585,36 @@ class CRScriptGenerator:
             if params.get('scaling'):
                 atk_per = params.get('atk_per', 0)
                 def_per = params.get('def_per', 0)
-                lines.append(f'        self.register_continuous_effect(ContinuousEffect(')
-                lines.append(f'            name="{self._escape_name(ability.raw_text, 40)}",')
-                lines.append(f'            affects_self_only=True,')
-                lines.append(f'            # Scaling: +{atk_per}/+{def_per} for each matching card')
-                lines.append(f'            apply_func=lambda game, card: self._apply_scaling_buff(game, card, {atk_per}, {def_per}),')
-                lines.append(f'        ))')
+                count_target = params.get('count_target')
+                if count_target:
+                    lines.append(f'        # Scaling buff: this card gains +{atk_per}/+{def_per} per {count_target}')
+                    type_key = count_target.lower()
+                    card_type_tokens = {"resonator", "j-ruler", "ruler", "j/resonator", "addition", "regalia", "spell", "chant", "magic stone"}
+                    if type_key in card_type_tokens:
+                        filter_args = f'controllers=[TargetController.YOU], card_types=["{count_target}"]'
+                    else:
+                        filter_args = f'controllers=[TargetController.YOU], races=["{count_target}"]'
+                    lines.append(f'        count_filter = TargetFilter({filter_args})')
+                    lines.append(f'        def _apply_scaling_buff(target, game):')
+                    lines.append(f'            source = target')
+                    lines.append(f'            count = 0')
+                    lines.append(f'            for p in game.players:')
+                    lines.append(f'                for c in p.field:')
+                    lines.append(f'                    if count_filter.matches(c, c.controller, source.controller, source):')
+                    lines.append(f'                        count += 1')
+                    lines.append(f'            target.current_atk = (target.current_atk or 0) + ({atk_per} * count)')
+                    lines.append(f'            target.current_def = (target.current_def or 0) + ({def_per} * count)')
+                    lines.append(f'        self.register_ability(ContinuousAbility(')
+                    lines.append(f'            name="{self._escape_name(ability.raw_text, 40)}",')
+                    lines.append(f'            continuous_effect=ContinuousEffect(')
+                    lines.append(f'                name="{self._escape_name(ability.raw_text, 40)}",')
+                    lines.append(f'                affects_self_only=True,')
+                    lines.append(f'                apply_func=_apply_scaling_buff,')
+                    lines.append(f'                duration=EffectDuration.WHILE_ON_FIELD')
+                    lines.append(f'            )')
+                    lines.append(f'        ))')
+                else:
+                    lines.append(f'        # TODO: scaling buff not auto-generated yet (+{atk_per}/+{def_per} per match)')
                 generated = True
                 break
 
@@ -556,42 +624,39 @@ class CRScriptGenerator:
                 def_mod = params.get('def', 0)
                 target_type = params.get('target_type', 'Resonator')
                 lines.append(f'        # Group buff: Each {target_type} you control')
-                lines.append(f'        self.register_continuous_effect(ContinuousEffect(')
+                type_key = target_type.lower()
+                card_type_tokens = {"resonator", "j-ruler", "ruler", "j/resonator", "addition", "regalia", "spell", "chant", "magic stone"}
+                if type_key in card_type_tokens:
+                    filter_args = f'controllers=[TargetController.YOU], card_types=["{target_type}"]'
+                else:
+                    filter_args = f'controllers=[TargetController.YOU], races=["{target_type}"]'
+                if params.get("to_others"):
+                    filter_args += ', exclude_source=True'
+                lines.append(f'        buff_filter = TargetFilter({filter_args})')
+                lines.append(f'        self.register_ability(AbilityFactory.continuous_buff(')
+                lines.append(f'            atk={atk_mod},')
+                lines.append(f'            def_={def_mod},')
+                lines.append(f'            filter_=buff_filter,')
                 lines.append(f'            name="{self._escape_name(ability.raw_text, 40)}",')
-                lines.append(f'            affects_self_only=False,')
-                lines.append(f'            modifier=StatModifier(atk={atk_mod}, def_={def_mod}),')
-                lines.append(f'            filter_func=lambda card: "{target_type}" in card.races,')
                 lines.append(f'        ))')
                 generated = True
                 break
 
             # Force attack: "must attack if able"
             if params.get('force_attack'):
-                lines.append(f'        self.register_continuous_effect(ContinuousEffect(')
-                lines.append(f'            name="Must Attack",')
-                lines.append(f'            affects_self_only=True,')
-                lines.append(f'            # Forces this card to attack if able')
-                lines.append(f'        ))')
+                lines.append(f'        # TODO: force-attack continuous effect not auto-generated yet')
                 generated = True
                 break
 
             # Double damage
             if params.get('double_damage'):
-                lines.append(f'        self.register_continuous_effect(ContinuousEffect(')
-                lines.append(f'            name="Double Damage",')
-                lines.append(f'            affects_self_only=True,')
-                lines.append(f'            # This card deals double damage')
-                lines.append(f'        ))')
+                lines.append(f'        # TODO: double-damage continuous effect not auto-generated yet')
                 generated = True
                 break
 
             # Dynamic ATK/DEF
             if params.get('dynamic'):
-                lines.append(f'        self.register_continuous_effect(ContinuousEffect(')
-                lines.append(f'            name="{self._escape_name(ability.raw_text, 40)}",')
-                lines.append(f'            affects_self_only=True,')
-                lines.append(f'            # ATK/DEF calculated dynamically')
-                lines.append(f'        ))')
+                lines.append(f'        # TODO: dynamic ATK/DEF continuous effect not auto-generated yet')
                 generated = True
                 break
 
@@ -617,13 +682,13 @@ class CRScriptGenerator:
             if effect.action == EffectAction.SEARCH:
                 search_code = self._effect_to_code(effect)
                 if search_code:
-                    lines.append(f'        effects = [{search_code}]')
+                    lines.append(f'        # TODO: continuous search effect not auto-generated yet')
                 generated = True
                 break
 
             # Remove from game (exile) effect
             if effect.action == EffectAction.REMOVE_FROM_GAME:
-                lines.append(f'        effects = [EffectBuilder.remove_from_game()]')
+                lines.append(f'        # TODO: continuous remove-from-game effect not auto-generated yet')
                 generated = True
                 break
 
@@ -637,7 +702,7 @@ class CRScriptGenerator:
                         lines.append(f'        card.add_keyword(KeywordAbility.{keyword.name if hasattr(keyword, "name") else keyword})')
                     else:
                         # Granted keyword with duration
-                        lines.append(f'        effects = [EffectBuilder.grant_keyword(KeywordAbility.{keyword.name if hasattr(keyword, "name") else keyword})]')
+                        lines.append(f'        # TODO: continuous keyword grant not auto-generated yet')
                     generated = True
                     # Continue to collect all keywords, don't break
 
@@ -650,11 +715,7 @@ class CRScriptGenerator:
                     effect_strs.append(effect_code)
 
             if effect_strs:
-                lines.append(f'        effects = [')
-                for effect_code in effect_strs:
-                    lines.append(f'            {effect_code},')
-                lines.append(f'        ]')
-                lines.append(f'        self.register_continuous_effect_with_effects(effects)')
+                lines.append(f'        # TODO: continuous effect requires manual implementation')
                 generated = True
             elif ability.effects:
                 effect_types = [e.action.name for e in ability.effects]
@@ -1320,13 +1381,17 @@ def generate_cr_scripts_for_set(db, set_code: str, output_dir: Path):
 
 
 def generate_all_cr_scripts(db, output_dir: Path):
-    """Generate CR-compliant scripts for all sets."""
+    """Generate CR-compliant scripts for all sets present in the database."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     init_content = '"""Auto-generated CR-compliant card scripts"""\n\n'
 
-    sets = ['CMF', 'TAT', 'MPR', 'MOA']
-    for set_code in sets:
+    try:
+        set_codes = db.get_all_set_codes()
+    except Exception:
+        set_codes = []
+
+    for set_code in set_codes:
         generate_cr_scripts_for_set(db, set_code, output_dir)
         init_content += f'from .{set_code.lower()}_cr import *\n'
 

@@ -32,7 +32,7 @@ class AesopThePrincesTutor(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+        # TODO: continuous keyword grant not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -212,7 +212,7 @@ class JulietTheHope(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.INDESTRUCTIBLE)]
+        # TODO: continuous keyword grant not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -303,11 +303,12 @@ class LightPalaceTheKingsCastle(RulesCardScript):
 
         # [Continuous] ability
         # Group buff: Each human you control
-        self.register_continuous_effect(ContinuousEffect(
+        buff_filter = TargetFilter(controllers=[TargetController.YOU], races=["human"], exclude_source=True)
+        self.register_ability(AbilityFactory.continuous_buff(
+            atk=200,
+            def_=200,
+            filter_=buff_filter,
             name="Each Human you control gains [+200/+200]",
-            affects_self_only=False,
-            modifier=StatModifier(atk=200, def_=200),
-            filter_func=lambda card: "human" in card.races,
         ))
 
 
@@ -385,10 +386,7 @@ class RapunzelTheLonghairedPrincess(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.recover(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -493,10 +491,25 @@ class TinkerBellTheSpirit(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=200,
-            def_=200,
-            name="This card gains [+200/+200] fo",
+        # Scaling buff: this card gains +200/+200 per fairy tale
+        count_filter = TargetFilter(controllers=[TargetController.YOU], races=["fairy tale"])
+        def _apply_scaling_buff(target, game):
+            source = target
+            count = 0
+            for p in game.players:
+                for c in p.field:
+                    if count_filter.matches(c, c.controller, source.controller, source):
+                        count += 1
+            target.current_atk = (target.current_atk or 0) + (200 * count)
+            target.current_def = (target.current_def or 0) + (200 * count)
+        self.register_ability(ContinuousAbility(
+            name="This card gains [+200/+200] for each Fai",
+            continuous_effect=ContinuousEffect(
+                name="This card gains [+200/+200] for each Fai",
+                affects_self_only=True,
+                apply_func=_apply_scaling_buff,
+                duration=EffectDuration.WHILE_ON_FIELD
+            )
         ))
 
 
@@ -520,7 +533,7 @@ class BasketOfLittleRed(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [EffectBuilder.search(destination="hand")]
+        # TODO: continuous search effect not auto-generated yet
 
 
 
@@ -543,11 +556,12 @@ class BloodyMoon(RulesCardScript):
 
         # [Continuous] ability
         # Group buff: Each werewolf you control
-        self.register_continuous_effect(ContinuousEffect(
+        buff_filter = TargetFilter(controllers=[TargetController.YOU], races=["werewolf"], exclude_source=True)
+        self.register_ability(AbilityFactory.continuous_buff(
+            atk=200,
+            def_=200,
+            filter_=buff_filter,
             name="Each Werewolf you control gains [+200/+2",
-            affects_self_only=False,
-            modifier=StatModifier(atk=200, def_=200),
-            filter_func=lambda card: "werewolf" in card.races,
         ))
 
 
@@ -606,11 +620,7 @@ class GillesDeRaisTheGoldenDragon(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=200,
-            def_=0,
-            name="This card gains [+200/+0] for ",
-        ))
+        # TODO: scaling buff not auto-generated yet (+200/+0 per match)
 
         # Triggered ability (DESTROYED)
         self.register_ability(AutomaticAbility(
@@ -726,7 +736,7 @@ class LoupgarouTheNewMoon(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.SWIFTNESS)]
+        # TODO: continuous keyword grant not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -875,11 +885,7 @@ class SevenDwarfs(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_continuous_effect(ContinuousEffect(
-            name="Must Attack",
-            affects_self_only=True,
-            # Forces this card to attack if able
-        ))
+        # TODO: force-attack continuous effect not auto-generated yet
 
 
 
@@ -999,10 +1005,25 @@ class ArcherOfTheCrescentMoon(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=300,
-            def_=300,
-            name="This card gains [+300/+300] fo",
+        # Scaling buff: this card gains +300/+300 per other wererabbit
+        count_filter = TargetFilter(controllers=[TargetController.YOU], races=["other wererabbit"])
+        def _apply_scaling_buff(target, game):
+            source = target
+            count = 0
+            for p in game.players:
+                for c in p.field:
+                    if count_filter.matches(c, c.controller, source.controller, source):
+                        count += 1
+            target.current_atk = (target.current_atk or 0) + (300 * count)
+            target.current_def = (target.current_def or 0) + (300 * count)
+        self.register_ability(ContinuousAbility(
+            name="This card gains [+300/+300] for each oth",
+            continuous_effect=ContinuousEffect(
+                name="This card gains [+300/+300] for each oth",
+                affects_self_only=True,
+                apply_func=_apply_scaling_buff,
+                duration=EffectDuration.WHILE_ON_FIELD
+            )
         ))
 
 
@@ -1048,12 +1069,7 @@ class DeepOnes(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_continuous_effect(ContinuousEffect(
-            name="This card gains[+200/+200] for each reso",
-            affects_self_only=True,
-            # Scaling: +200/+200 for each matching card
-            apply_func=lambda game, card: self._apply_scaling_buff(game, card, 200, 200),
-        ))
+        # TODO: scaling buff not auto-generated yet (+200/+200 per match)
 
 
 
@@ -1124,10 +1140,7 @@ class HeavenlyFeatheredRobe(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.gain_control(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -1271,11 +1284,12 @@ class PaleMoon(RulesCardScript):
 
         # [Continuous] ability
         # Group buff: Each wererabbit you control
-        self.register_continuous_effect(ContinuousEffect(
+        buff_filter = TargetFilter(controllers=[TargetController.YOU], races=["wererabbit"], exclude_source=True)
+        self.register_ability(AbilityFactory.continuous_buff(
+            atk=200,
+            def_=200,
+            filter_=buff_filter,
             name="Each Wererabbit you control gains [+200/",
-            affects_self_only=False,
-            modifier=StatModifier(atk=200, def_=200),
-            filter_func=lambda card: "wererabbit" in card.races,
         ))
 
 
@@ -1329,16 +1343,10 @@ class RatCatchersPipe(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.rest(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
         # [Continuous] ability
-        effects = [
-            EffectBuilder.recover(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -1409,10 +1417,25 @@ class ServantOfKaguya(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        self.register_ability(AbilityFactory.continuous_buff(
-            atk=400,
-            def_=400,
-            name="This card gains [+400/+400] fo",
+        # Scaling buff: this card gains +400/+400 per treasury item
+        count_filter = TargetFilter(controllers=[TargetController.YOU], races=["treasury item"])
+        def _apply_scaling_buff(target, game):
+            source = target
+            count = 0
+            for p in game.players:
+                for c in p.field:
+                    if count_filter.matches(c, c.controller, source.controller, source):
+                        count += 1
+            target.current_atk = (target.current_atk or 0) + (400 * count)
+            target.current_def = (target.current_def or 0) + (400 * count)
+        self.register_ability(ContinuousAbility(
+            name="This card gains [+400/+400] for each Tre",
+            continuous_effect=ContinuousEffect(
+                name="This card gains [+400/+400] for each Tre",
+                affects_self_only=True,
+                apply_func=_apply_scaling_buff,
+                duration=EffectDuration.WHILE_ON_FIELD
+            )
         ))
 
 
@@ -1431,10 +1454,7 @@ class SquirmerOfTheDark(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.lose_life(1000),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -1644,7 +1664,7 @@ class CottageOfCakes(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+        # TODO: continuous keyword grant not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -1762,12 +1782,13 @@ class FinaTheSilverPlayer(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        # Group buff: Each other you control
-        self.register_continuous_effect(ContinuousEffect(
+        # Group buff: Each elf you control
+        buff_filter = TargetFilter(controllers=[TargetController.YOU], races=["elf"], exclude_source=True)
+        self.register_ability(AbilityFactory.continuous_buff(
+            atk=400,
+            def_=400,
+            filter_=buff_filter,
             name="Each other Elf you control gains [+400/+",
-            affects_self_only=False,
-            modifier=StatModifier(atk=400, def_=400),
-            filter_func=lambda card: "other" in card.races,
         ))
 
 
@@ -1910,11 +1931,12 @@ class DartagnanTheBayoneteer(RulesCardScript):
         """Register abilities when card is created."""
         # [Continuous] ability
         # Group buff: Each musketeer you control
-        self.register_continuous_effect(ContinuousEffect(
+        buff_filter = TargetFilter(controllers=[TargetController.YOU], races=["musketeer"], exclude_source=True)
+        self.register_ability(AbilityFactory.continuous_buff(
+            atk=400,
+            def_=400,
+            filter_=buff_filter,
             name="Each Musketeer resonator you control gai",
-            affects_self_only=False,
-            modifier=StatModifier(atk=400, def_=400),
-            filter_func=lambda card: "musketeer" in card.races,
         ))
 
 
@@ -2042,11 +2064,12 @@ class AlvarezTheDemonCastle(RulesCardScript):
 
         # [Continuous] ability
         # Group buff: Each vampire you control
-        self.register_continuous_effect(ContinuousEffect(
+        buff_filter = TargetFilter(controllers=[TargetController.YOU], races=["vampire"], exclude_source=True)
+        self.register_ability(AbilityFactory.continuous_buff(
+            atk=200,
+            def_=200,
+            filter_=buff_filter,
             name="Each Vampire you control gains [+200/+20",
-            affects_self_only=False,
-            modifier=StatModifier(atk=200, def_=200),
-            filter_func=lambda card: "vampire" in card.races,
         ))
 
 
@@ -2070,7 +2093,7 @@ class BlackCoffinOfVampires(RulesCardScript):
         ))
 
         # [Continuous] ability
-        effects = [EffectBuilder.grant_keyword(KeywordAbility.BARRIER)]
+        # TODO: continuous keyword grant not auto-generated yet
 
 
     def get_keywords(self) -> KeywordAbility:
@@ -2341,10 +2364,7 @@ class ServantOfVampire(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.grant_ability(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 
@@ -2428,11 +2448,7 @@ class VampiresStaff(RulesCardScript):
     def initial_effect(self, game, card):
         """Register abilities when card is created."""
         # [Continuous] ability
-        effects = [
-            EffectBuilder.deal_damage(100),
-            EffectBuilder.reveal_top(),
-        ]
-        self.register_continuous_effect_with_effects(effects)
+        # TODO: continuous effect requires manual implementation
 
 
 

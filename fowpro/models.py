@@ -229,34 +229,6 @@ class Rarity(Enum):
     RULER = "Ruler"  # Ruler cards have their own rarity
 
 
-class EffectType(Enum):
-    """Types of card effects"""
-    CONTINUOUS = auto()
-    ACTIVATED = auto()
-    TRIGGER = auto()
-    ENTER = auto()  # ETB
-    LEAVE = auto()  # LTB
-    ATTACK = auto()
-    BLOCK = auto()
-    DAMAGE = auto()
-    JUDGMENT = auto()
-
-
-class TriggerCondition(Enum):
-    """When triggered effects trigger"""
-    ENTERS_FIELD = auto()
-    LEAVES_FIELD = auto()
-    DESTROYED = auto()
-    ATTACKS = auto()
-    BLOCKS = auto()
-    DEALS_DAMAGE = auto()
-    TAKES_DAMAGE = auto()
-    BEGINNING_OF_TURN = auto()
-    END_OF_TURN = auto()
-    DRAW_CARD = auto()
-    PLAY_CARD = auto()
-    JUDGMENT = auto()
-
 
 # =============================================================================
 # COST STRUCTURES
@@ -491,19 +463,6 @@ class WillPool:
 # =============================================================================
 
 @dataclass
-class CardAbility:
-    """Represents a single ability on a card"""
-    ability_type: EffectType
-    text: str
-    cost: Optional[WillCost] = None
-    additional_cost: str = ""  # "Rest", "Banish this card", etc.
-    trigger: Optional[TriggerCondition] = None
-
-    # For effect execution
-    effect_id: str = ""  # Links to effect implementation
-
-
-@dataclass
 class CardData:
     """Static card data (database template)"""
     code: str  # e.g., "CMF-001"
@@ -515,7 +474,6 @@ class CardData:
     defense: int = 0
     races: list[str] = dataclass_field(default_factory=list)  # Traits like "Human", "Fairy Tale"
     keywords: Keyword = Keyword.NONE
-    abilities: list[CardAbility] = dataclass_field(default_factory=list)
     ability_text: str = ""  # Raw ability text
     flavor_text: str = ""
     rarity: Rarity = Rarity.COMMON
